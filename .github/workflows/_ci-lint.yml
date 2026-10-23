@@ -1,0 +1,161 @@
+# Stage 1 `lint` (CI-LINT-*): formatter check, linter and type check of one stack, workflow lint,
+# Terraform static checks. No credentials (CI-LINT-05). Caller grants `contents: read`.
+name: ci-lint
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: node, bun, go, python, rust, docs, generic (needs command) or none (only workflow and Terraform checks)
+        type: string
+        required: true
+      working-directory:
+        description: Directory that holds the project manifest
+        type: string
+        default: .
+      tool-version:
+        description: Toolchain version; empty reads the repo pin file
+        type: string
+        default: ''
+      install-command:
+        description: Replaces the default dependency install
+        type: string
+        default: ''
+      command:
+        description: Replaces the default lint commands of the stack
+        type: string
+        default: ''
+      workflow-lint:
+        description: Run actionlint and zizmor on .github/workflows (CI-LINT-03)
+        type: boolean
+        default: true
+      terraform:
+        description: Run the Terraform static checks (CI-LINT-04)
+        type: boolean
+        default: false
+      terraform-directory:
+        description: Terraform root module directory
+        type: string
+        default: terraform
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `$/` is GitHub's self-repository syntax: the action at this workflow's own repo and ref,
+      # not in the caller's checkout, where a `./` path would look.
+      - name: Set up the stack
+        if: inputs.stack != 'none'
+        uses: $/.github/actions/setup
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          tool-version: ${{ inputs.tool-version }}
+          install-command: ${{ inputs.install-command }}
+
+      - name: Run the lint checks of the stack
+        if: inputs.stack != 'none'
+        env:
+          STACK: ${{ inputs.stack }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          if [ -n "$COMMAND" ]; then
+            # Pass the exit code on explicitly; a failing command fails the stage.
+            eval "$COMMAND" && exit 0
+            exit $?
+          fi
+          bin() { if [ -x "node_modules/.bin/$1" ]; then echo "node_modules/.bin/$1"; else echo "bunx $2"; fi; }
+          case "$STACK" in
+            node)
+              pnpm exec biome ci .
+              if [ -f tsconfig.json ]; then pnpm exec tsc --noEmit; fi
+              ;;
+            bun)
+              $(bin biome @biomejs/biome) ci .
+              if [ -f tsconfig.json ]; then $(bin tsc "-p typescript tsc") --noEmit; fi
+              ;;
+            go)
+              unformatted="$(gofmt -l . | grep -v '^vendor/' || true)"
+              if [ -n "$unformatted" ]; then echo "::error::gofmt would change: $unformatted"; exit 1; fi
+              go vet ./...
+              ;;
+            python)
+              ruff=ruff
+              command -v ruff >/dev/null || ruff="uvx ruff"
+              $ruff check .
+              $ruff format --check .
+              if [ -f mypy.ini ] || grep -qs '^\[tool\.mypy\]' pyproject.toml; then mypy .; fi
+              ;;
+            rust)
+              cargo fmt --all --check
+              cargo clippy --all-targets --all-features --locked -- -D warnings
+              ;;
+            docs) ;;
+            generic) echo "::error::stack generic needs the command input"; exit 1 ;;
+          esac
+
+      - name: Run golangci-lint
+        if: inputs.stack == 'go' && inputs.command == '' && hashFiles(format('{0}/.golangci.yml', inputs.working-directory), format('{0}/.golangci.yaml', inputs.working-directory), format('{0}/.golangci.toml', inputs.working-directory)) != ''
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Lint the Markdown
+        if: inputs.stack == 'docs' && inputs.command == ''
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+        with:
+          globs: |
+            ${{ inputs.working-directory }}/**/*.md
+            !**/node_modules/**
+
+      - name: Check the local links
+        if: inputs.stack == 'docs' && inputs.command == ''
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --offline --no-progress --include-fragments '${{ inputs.working-directory }}/**/*.md'
+          fail: true
+
+      - name: Lint the workflows
+        if: inputs.workflow-lint && hashFiles('.github/workflows/*.yml', '.github/workflows/*.yaml') != ''
+        working-directory: .
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.12 -color
+          config=()
+          if [ ! -f .github/zizmor.yml ] && [ ! -f zizmor.yml ]; then
+            # Callers pin the fleet workflows by tag (CI-STAGE-04); every other action by SHA.
+            printf '%s\n' 'rules:' '  unpinned-uses:' '    config:' '      policies:' \
+              '        "VelimirMueller/*": ref-pin' '        "*": hash-pin' > "$RUNNER_TEMP/zizmor.yml"
+            config=(--config "$RUNNER_TEMP/zizmor.yml")
+          fi
+          pipx run --spec zizmor==1.30.1 zizmor --offline --no-progress --format github "${config[@]}" .github
+
+      - name: Check the Terraform
+        if: inputs.terraform
+        uses: $/.github/actions/tf-check
+        with:
+          working-directory: ${{ inputs.terraform-directory }}
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ github.sha }}
+          RESULT: ${{ job.status }}
+        run: echo "lint · $SHA · pr · $RESULT" >> "$GITHUB_STEP_SUMMARY"

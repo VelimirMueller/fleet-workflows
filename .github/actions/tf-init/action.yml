@@ -1,0 +1,109 @@
+name: tf-init
+description: >-
+  Prepare a Terraform job for one environment: write the job environment file
+  ($RUNNER_TEMP/fleet-tf.env, sourced by each Terraform step), log in to the cloud,
+  install the pinned Terraform and run `init` with `envs/<env>.backend.hcl`. Used by `_tf-plan.yml`
+  and `_tf-apply.yml`.
+
+inputs:
+  environment:
+    description: dev, stg or prd.
+    required: true
+  working-directory:
+    description: Terraform root module directory.
+    required: false
+    default: terraform
+  env:
+    description: Non-secret `KEY=value` lines to export, for example `ARM_USE_OIDC=true`.
+    required: false
+    default: ''
+  secret-env:
+    description: Secret `KEY=value` lines to export. Each value is masked.
+    required: false
+    default: ''
+  github-token:
+    description: Token exported as GITHUB_TOKEN for the integrations/github provider. Empty keeps the job token.
+    required: false
+    default: ''
+  aws-role-arn:
+    description: AWS role to assume with OIDC. Empty skips the AWS login.
+    required: false
+    default: ''
+  aws-region:
+    description: AWS region for the login.
+    required: false
+    default: eu-central-1
+
+runs:
+  using: composite
+  steps:
+    - name: Check the environment input
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        DIR: ${{ inputs.working-directory }}
+      shell: bash
+      run: |
+        case "$ENVIRONMENT" in dev|stg|prd) ;; *) echo "::error::environment '$ENVIRONMENT' is not dev, stg or prd"; exit 1 ;; esac
+        for f in "$DIR/envs/$ENVIRONMENT.tfvars" "$DIR/envs/$ENVIRONMENT.backend.hcl" "$DIR/.terraform-version"; do
+          [ -f "$f" ] || { echo "::error::$f is missing (TF-LAYOUT-02, TF-LAYOUT-06)"; exit 1; }
+        done
+
+    - name: Write the job environment file
+      env:
+        PLAIN_ENV: ${{ inputs.env }}
+        SECRET_ENV: ${{ inputs.secret-env }}
+        TOKEN: ${{ inputs.github-token }}
+      shell: bash
+      run: |
+        # Each Terraform step sources this file; nothing goes to GITHUB_ENV.
+        file="$RUNNER_TEMP/fleet-tf.env"
+        umask 077
+        : > "$file"
+        add() { printf 'export %s=%q\n' "$1" "$2" >> "$file"; }
+        read_lines() {
+          local secret=$1 line key value
+          while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            value="${line#*=}"
+            if ! [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || [ "$key" = "$line" ]; then
+              echo "::error::an env line is not KEY=value with an UPPER_SNAKE key"; exit 1
+            fi
+            if [ "$secret" = 1 ] && [ -n "$value" ]; then echo "::add-mask::$value"; fi
+            add "$key" "$value"
+          done
+        }
+        read_lines 0 <<< "$PLAIN_ENV"
+        read_lines 1 <<< "$SECRET_ENV"
+        if [ -n "$TOKEN" ]; then add GITHUB_TOKEN "$TOKEN"; fi
+        add TF_IN_AUTOMATION true
+
+    - name: Log in to AWS
+      if: inputs.aws-role-arn != ''
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Read the pinned Terraform version
+      id: version
+      env:
+        DIR: ${{ inputs.working-directory }}
+      shell: bash
+      run: echo "version=$(tr -d '[:space:]' < "$DIR/.terraform-version")" >> "$GITHUB_OUTPUT"
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        terraform_version: ${{ steps.version.outputs.version }}
+        terraform_wrapper: false
+
+    - name: Initialise the backend
+      env:
+        DIR: ${{ inputs.working-directory }}
+        ENVIRONMENT: ${{ inputs.environment }}
+      shell: bash
+      run: |
+        . "$RUNNER_TEMP/fleet-tf.env"
+        terraform -chdir="$DIR" init -input=false -lockfile=readonly -backend-config="envs/$ENVIRONMENT.backend.hcl"

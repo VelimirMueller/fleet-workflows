@@ -1,0 +1,72 @@
+# Self-test: run this repo's own lint stage (stack docs) on every workflow, action and doc. It also
+# proves on each PR that the `$/` self-repository action references resolve.
+# Budget rules: pull_request only, draft PRs skip, a changes job instead of `paths` (CI-COST-10),
+# one concurrency group per PR, timeouts on every job.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code == 'true' }}
+    steps:
+      - name: Detect workflow changes
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
+
+  lint:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_ci-lint.yml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects $/ in a job uses
+    with:
+      stack: docs
+
+  conclusion:
+    needs: [changes, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail when a job failed or the lint stage was skipped
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          LINT: ${{ needs.lint.result }}
+        run: |
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) echo "::error::a job ended as $r"; exit 1 ;; esac
+          done
+          if [ "$CODE" = "true" ] && [ "$LINT" != "success" ]; then
+            echo "::error::the lint stage did not run"; exit 1
+          fi

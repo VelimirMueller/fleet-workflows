@@ -1,0 +1,173 @@
+# Stage 4 `build` inside deploy-dev: build once per SHA and publish it (CI-BUILD-01, CI-BUILD-03).
+# Only a workflow_dispatch on refs/heads/develop publishes, and only a SHA whose checks passed
+# (CI-DEPLOY-02). The image tag is the full SHA, never `latest`; a file artifact is
+# `build-dev-<sha>` (CI-ENV-07). Caller grants `contents: read`, `packages: write`, `checks: read`
+# and `pull-requests: read`.
+name: build-publish
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: node, bun, go, python, rust, generic (needs command, or image) or none (image only)
+        type: string
+        required: true
+      working-directory:
+        description: Directory that holds the project manifest
+        type: string
+        default: .
+      tool-version:
+        description: Toolchain version; empty reads the repo pin file
+        type: string
+        default: ''
+      install-command:
+        description: Replaces the default dependency install
+        type: string
+        default: ''
+      command:
+        description: Replaces the default build command
+        type: string
+        default: ''
+      image:
+        description: Build the container image and push it to ghcr.io
+        type: boolean
+        default: false
+      dockerfile:
+        description: Dockerfile path, relative to the repo root
+        type: string
+        default: Dockerfile
+      context:
+        description: Docker build context, relative to the repo root
+        type: string
+        default: .
+      required-stages:
+        description: Space-separated ci.yml stage jobs whose newest check run must be green next to conclusion
+        type: string
+        default: lint unit build
+      artifact-path:
+        description: Build output to upload as build-dev-<sha> for the deploy jobs; empty uploads nothing
+        type: string
+        default: ''
+    outputs:
+      image:
+        description: Image with the SHA tag (ghcr.io/<owner>/<repo>:<sha>), or empty
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: Image digest, or empty
+        value: ${{ jobs.build.outputs.digest }}
+      artifact:
+        description: Name of the uploaded build artifact, or empty
+        value: ${{ jobs.build.outputs.artifact }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      checks: read
+      pull-requests: read
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+      artifact: ${{ steps.artifact.outputs.name }}
+    steps:
+      - name: Refuse to publish from any ref but develop
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [ "$REF" = "refs/heads/develop" ] || { echo "::error::build-publish runs only on refs/heads/develop, not $REF (CI-BUILD-03)"; exit 1; }
+
+      - name: Check that the PR checks of the SHA passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          STAGES: ${{ inputs.required-stages }}
+        run: |
+          # CI-DEPLOY-02: the SHA ran a green `conclusion` itself (ci.yml dispatch on develop), or a
+          # merged PR whose head has the same tree had a green `conclusion`. Only the newest run of a
+          # check counts, and only from GitHub Actions: an old success does not outvote a new failure.
+          # `conclusion` (CI-CHECK-02) also proves the stages ran when code changed (CI-CHECK-04);
+          # each stage check must be green as well, so a docs-only PR head does not count.
+          latest() {
+            gh api "repos/$REPOSITORY/commits/$1/check-runs?check_name=$2&filter=latest&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | (.status // "missing") + "/" + (.conclusion // "none")'
+          }
+          stage_green() {
+            gh api "repos/$REPOSITORY/commits/$1/check-runs?filter=latest&per_page=100" | jq -r \
+              --arg stage "$2" '[.check_runs[] | select(.app.slug == "github-actions") | select(.name == $stage or (.name | startswith($stage + " / ")))] | sort_by(.started_at) | last | .conclusion == "success"' | grep -qx true
+          }
+          passed() {
+            [ "$(latest "$1" conclusion)" = "completed/success" ] || return 1
+            for stage in $STAGES; do stage_green "$1" "$stage" || { echo "::warning::stage $stage is not green on $1"; return 1; }; done
+          }
+          if passed "$SHA"; then echo "conclusion passed on $SHA."; exit 0; fi
+          head="$(gh api "repos/$REPOSITORY/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null)][0].head.sha // empty')"
+          [ -n "$head" ] || { echo "::error::$SHA has no merged PR and no green conclusion; run ci.yml on develop first"; exit 1; }
+          tree() { gh api "repos/$REPOSITORY/git/commits/$1" --jq .tree.sha; }
+          [ "$(tree "$SHA")" = "$(tree "$head")" ] || { echo "::error::the PR head $head has another tree than $SHA; run ci.yml on develop first"; exit 1; }
+          passed "$head" || { echo "::error::the conclusion check of the PR head $head did not pass"; exit 1; }
+          echo "conclusion passed on the PR head $head (same tree as $SHA)."
+
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `$/` is GitHub's self-repository syntax: the action at this workflow's own repo and ref,
+      # not in the caller's checkout, where a `./` path would look.
+      - name: Set up the stack
+        if: inputs.stack != 'none'
+        uses: $/.github/actions/setup
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          tool-version: ${{ inputs.tool-version }}
+          install-command: ${{ inputs.install-command }}
+
+      - name: Build and publish
+        id: build
+        uses: $/.github/actions/build
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          command: ${{ inputs.command }}
+          image: ${{ inputs.image }}
+          dockerfile: ${{ inputs.dockerfile }}
+          context: ${{ inputs.context }}
+          push: true
+
+      - name: Name the build artifact
+        id: artifact
+        if: inputs.artifact-path != ''
+        env:
+          SHA: ${{ github.sha }}
+        run: echo "name=build-dev-$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the build artifact
+        if: inputs.artifact-path != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ github.sha }}
+          RESULT: ${{ job.status }}
+          IMAGE: ${{ steps.build.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARTIFACT: ${{ steps.artifact.outputs.name }}
+        run: echo "build · $SHA · dev · $RESULT · image ${IMAGE:-none}${DIGEST:+@$DIGEST} · artifact ${ARTIFACT:-none}" >> "$GITHUB_STEP_SUMMARY"
