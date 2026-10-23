@@ -201,10 +201,15 @@ jobs:
         run: |
           . "$RUNNER_TEMP/fleet-tf.env"
           set +e
-          terraform apply -input=false -lock-timeout=5m tfplan 2>&1 | tee apply.log
-          ec=${PIPESTATUS[0]}
+          # Apply output and error blocks can quote attribute values, and the log is public. Keep the
+          # output on the runner and print only progress lines without ids, the result and the
+          # one-line error summaries.
+          terraform apply -input=false -no-color -lock-timeout=5m tfplan > "$RUNNER_TEMP/apply.log" 2>&1
+          ec=$?
           set -e
-          if grep -q "Saved plan is stale" apply.log; then
+          grep -E '^[^ ]+: (Creating|Modifying|Destroying|Creation complete|Modifications complete|Destruction complete)|^Apply complete!|^(│ )?Error: ' "$RUNNER_TEMP/apply.log" \
+            | sed -E 's/ \[id=[^]]*\]//' || true
+          if grep -q "Saved plan is stale" "$RUNNER_TEMP/apply.log"; then
             echo "::error::the saved plan is stale; start a new plan, do not re-run this job"
           fi
           exit "$ec"

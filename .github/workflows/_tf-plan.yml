@@ -126,8 +126,8 @@ jobs:
           set -e
           if [ "$ec" -ne 0 ] && [ "$ec" -ne 2 ]; then
             echo "::error::terraform plan failed with exit code $ec"
-            # Print only the error blocks, not the plan.
-            sed -n '/Error: /,$p' "$RUNNER_TEMP/plan.log" | head -n 80
+            # Error blocks can quote attribute values: print only the one-line error summaries.
+            grep -E '^(│ )?Error: ' "$RUNNER_TEMP/plan.log" | head -n 20 || true
             exit "$ec"
           fi
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
