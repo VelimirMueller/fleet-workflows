@@ -1,0 +1,28 @@
+# Install the pinned age release. The tarball is checked against its sha256 before it runs.
+# _tf-plan.yml seals the saved plan with it and _tf-apply.yml opens it.
+name: age
+description: Install the pinned age release (checksum checked) and output the path of the binary
+
+outputs:
+  bin:
+    description: Absolute path of the age binary
+    value: ${{ steps.install.outputs.bin }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install age
+      id: install
+      env:
+        VERSION: v1.3.2
+        SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+      shell: bash
+      run: |
+        [ "$RUNNER_OS-$RUNNER_ARCH" = "Linux-X64" ] || { echo "::error::age is pinned for Linux X64 only, not $RUNNER_OS-$RUNNER_ARCH"; exit 1; }
+        dir="$RUNNER_TEMP/age-$VERSION"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "$dir/age.tar.gz" "https://github.com/FiloSottile/age/releases/download/$VERSION/age-$VERSION-linux-amd64.tar.gz"
+        echo "$SHA256  $dir/age.tar.gz" | sha256sum -c --quiet -
+        tar -xzf "$dir/age.tar.gz" -C "$dir" --strip-components=1 age/age
+        "$dir/age" --version
+        echo "bin=$dir/age" >> "$GITHUB_OUTPUT"

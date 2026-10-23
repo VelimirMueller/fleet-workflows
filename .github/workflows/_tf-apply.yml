@@ -1,7 +1,10 @@
-# Terraform apply of one saved plan. The plan comes from this run (infra.yml) or, with
-# plan-run-id, from an earlier run (tf-apply-prd.yml, GOV-PRV-02). Checks out the commit the plan
-# was made for, refuses destroys unless allowed, and applies only the saved plan. Caller grants
-# `contents: read`, `id-token: write` and `actions: read`.
+# Terraform apply of one sealed plan from _tf-plan.yml. The plan comes from this run (infra.yml)
+# or, with plan-run-id, from an earlier run (tf-apply-prd.yml, GOV-PRV-02). Before it downloads,
+# the job checks the source run through the API: same repo, the plan workflow, workflow_dispatch
+# on this branch, success, and the same head SHA as this run. It downloads the exact artifact
+# tfplan-<env>-<sha>, opens it with PLAN_AGE_IDENTITY, checks its sha256, refuses destroys and
+# replaces unless allowed (from `terraform show -json`), and applies only that plan.
+# Caller grants `contents: read`, `id-token: write` and `actions: read`.
 name: tf-apply
 
 on:
@@ -21,6 +24,14 @@ on:
         default: ''
       plan-run-id:
         description: Run id that saved the plan; empty uses this run
+        type: string
+        default: ''
+      plan-workflow:
+        description: File name of the workflow that must have saved the plan when plan-run-id is set
+        type: string
+        default: infra.yml
+      plan-sha256:
+        description: sha256 output of _tf-plan.yml; when set, the opened plan must match it
         type: string
         default: ''
       allow-destroy:
@@ -44,6 +55,9 @@ on:
         type: string
         default: ''
     secrets:
+      PLAN_AGE_IDENTITY:
+        description: age secret key (AGE-SECRET-KEY-1...) that opens the plan sealed for PLAN_AGE_RECIPIENT
+        required: true
       TF_ENV:
         description: Secret KEY=value lines for Terraform, for example TF_TOKEN_app_terraform_io
         required: false
@@ -68,51 +82,83 @@ jobs:
       actions: read
     environment: ${{ inputs.github-environment }}
     steps:
-      - name: Download the saved plan
+      - name: Check the run that saved the plan
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PLAN_RUN_ID: ${{ inputs.plan-run-id }}
+          PLAN_WORKFLOW: ${{ inputs.plan-workflow }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          name="tfplan-$ENVIRONMENT-$SHA"
+          if [ -z "$PLAN_RUN_ID" ]; then
+            run="$RUN_ID"
+          else
+            [[ "$PLAN_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::plan-run-id must be a run id"; exit 1; }
+            run="$PLAN_RUN_ID"
+            # An artifact is only as good as the run that made it: refuse any other source.
+            gh api "repos/$REPOSITORY/actions/runs/$run" | jq -e \
+              --arg repo "$REPOSITORY" --arg path ".github/workflows/$PLAN_WORKFLOW" --arg branch "$BRANCH" --arg sha "$SHA" '
+              (.repository.full_name == $repo) and (.head_repository.full_name == $repo)
+              and ((.path | split("@")[0]) == $path) and (.event == "workflow_dispatch") and (.head_branch == $branch)
+              and (.status == "completed") and (.conclusion == "success") and (.head_sha == $sha)' >/dev/null \
+              || { echo "::error::run $run is not a successful $PLAN_WORKFLOW dispatch of $SHA on $BRANCH in $REPOSITORY; plan again"; exit 1; }
+          fi
+          count="$(gh api "repos/$REPOSITORY/actions/runs/$run/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false)] | length')"
+          [ "$count" = 1 ] || { echo "::error::run $run has $count live artifacts named $name, not 1; plan again"; exit 1; }
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Download the sealed plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: tfplan-${{ inputs.environment }}-*
+          name: ${{ steps.source.outputs.name }}
           path: ${{ runner.temp }}/tfplan
-          run-id: ${{ inputs.plan-run-id || github.run_id }}
+          run-id: ${{ steps.source.outputs.run }}
           github-token: ${{ github.token }}
 
-      - name: Read the planned commit
-        id: plan
+      # `$/` is GitHub's self-repository syntax: the action at this workflow's own repo and ref,
+      # not in the caller's checkout, where a `./` path would look.
+      - name: Install age
+        id: age
+        uses: $/.github/actions/age
+
+      - name: Open the plan and check its sha256
         env:
           DIR: ${{ runner.temp }}/tfplan
+          AGE: ${{ steps.age.outputs.bin }}
+          IDENTITY: ${{ secrets.PLAN_AGE_IDENTITY }}
+          EXPECTED: ${{ inputs.plan-sha256 }}
+          SHA: ${{ github.sha }}
         run: |
-          # One artifact per match lands in its own folder; more than one plan for the env is ambiguous.
-          shopt -s nullglob
-          plans=("$DIR"/tfplan-*/)
-          [ "${#plans[@]}" -eq 1 ] || { echo "::error::expected one tfplan-<env>-* artifact in the run, found ${#plans[@]}; plan again"; exit 1; }
-          plan="${plans[0]%/}"
-          [ -s "$plan/tfplan" ] && [ -s "$plan/plan.txt" ] && [ -s "$plan/plan-sha.txt" ] || { echo "::error::the saved plan is missing or empty; plan again"; exit 1; }
-          echo "dir=$plan" >> "$GITHUB_OUTPUT"
-          sha="$(tr -d '[:space:]' < "$plan/plan-sha.txt")"
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::plan-sha.txt does not hold a commit SHA"; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          [ -n "$IDENTITY" ] || { echo "::error::PLAN_AGE_IDENTITY is empty; the plan cannot be opened"; exit 1; }
+          [ -s "$DIR/tfplan.age" ] && [ -s "$DIR/tfplan.sha256" ] && [ -s "$DIR/plan-sha.txt" ] || { echo "::error::the saved plan is missing or empty; plan again"; exit 1; }
+          [ "$(tr -d '[:space:]' < "$DIR/plan-sha.txt")" = "$SHA" ] || { echo "::error::the plan was not made for $SHA; plan again"; exit 1; }
+          umask 077
+          printf '%s\n' "$IDENTITY" > "$RUNNER_TEMP/age-identity.txt"
+          "$AGE" -d -i "$RUNNER_TEMP/age-identity.txt" -o "$DIR/tfplan" "$DIR/tfplan.age"
+          rm -f "$RUNNER_TEMP/age-identity.txt"
+          sum="$(sha256sum "$DIR/tfplan" | cut -d' ' -f1)"
+          [ "$sum" = "$(tr -d '[:space:]' < "$DIR/tfplan.sha256")" ] || { echo "::error::the opened plan does not match tfplan.sha256"; exit 1; }
+          if [ -n "$EXPECTED" ] && [ "$sum" != "$EXPECTED" ]; then
+            echo "::error::the opened plan does not match the plan-sha256 of the plan job"; exit 1
+          fi
+          echo "plan sha256 $sum"
 
       - name: Check out the planned commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.plan.outputs.sha }}
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Check the plan against the run and the destroy guard
+      - name: Put the plan into the module
         env:
           DIR: ${{ inputs.working-directory }}
-          PLAN_DIR: ${{ steps.plan.outputs.dir }}
-          PLAN_SHA: ${{ steps.plan.outputs.sha }}
-          RUN_SHA: ${{ github.sha }}
-          ALLOW_DESTROY: ${{ inputs.allow-destroy }}
-        run: |
-          git merge-base --is-ancestor "$PLAN_SHA" "$RUN_SHA" || { echo "::error::the plan commit $PLAN_SHA is not in the history of $RUN_SHA"; exit 1; }
-          cp "$PLAN_DIR/tfplan" "$PLAN_DIR/plan.txt" "$DIR/"
-          if [ "$ALLOW_DESTROY" != true ] && grep -Eq '^ *# .* (will be destroyed|must be replaced)' "$DIR/plan.txt"; then
-            echo "::error::the plan destroys or replaces resources; set allow-destroy: true to apply it"
-            exit 1
-          fi
+          PLAN_DIR: ${{ runner.temp }}/tfplan
+        run: cp "$PLAN_DIR/tfplan" "$DIR/tfplan"
 
       - name: Create the GitHub App token
         id: app_token
@@ -136,6 +182,20 @@ jobs:
           aws-role-arn: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
 
+      - name: Check the destroy guard
+        env:
+          ALLOW_DESTROY: ${{ inputs.allow-destroy }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          . "$RUNNER_TEMP/fleet-tf.env"
+          # From the plan itself, not from a text rendering. A replace has a delete action too.
+          destroys="$(terraform show -json tfplan | jq '[(.resource_changes // [])[] | select(.change.actions | index("delete"))] | length')"
+          echo "the plan deletes or replaces $destroys resources"
+          if [ "$ALLOW_DESTROY" != true ] && [ "$destroys" -gt 0 ]; then
+            echo "::error::the plan destroys or replaces resources; set allow-destroy: true to apply it"
+            exit 1
+          fi
+
       - name: Apply the saved plan
         working-directory: ${{ inputs.working-directory }}
         run: |
@@ -152,7 +212,7 @@ jobs:
       - name: Write the stage summary
         if: always()
         env:
-          SHA: ${{ steps.plan.outputs.sha || github.sha }}
+          SHA: ${{ github.sha }}
           ENVIRONMENT: ${{ inputs.environment }}
           RESULT: ${{ job.status }}
         run: echo "apply · $SHA · $ENVIRONMENT · $RESULT" >> "$GITHUB_STEP_SUMMARY"

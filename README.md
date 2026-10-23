@@ -48,10 +48,19 @@ Stage-specific inputs:
 - `_ci-unit.yml`: `coverage-floor` (80; 0 turns the CI check off). The check reads `coverage/lcov.info` (Go: `coverage/cover.out`).
 - `_ci-e2e.yml`: `environment` (`pr`), `ref` (''). Node and bun default to `playwright test --project=chromium`. The command must write JUnit XML to `e2e-junit.xml`, because a run where no test ran fails.
 - `_ci-build.yml`: `pack` (false; true for tier `library`), `image` (false), `dockerfile`, `context`.
-- `_build-publish.yml`: `image`, `dockerfile`, `context`, `artifact-path`. Publishes only from a dispatch on `develop`, and only a SHA whose PR `conclusion` check passed. Image tag `ghcr.io/<owner>/<repo>:<sha>`, artifact `build-dev-<sha>`.
+- `_build-publish.yml`: `image`, `dockerfile`, `context`, `artifact-path`, `required-stages` (`lint unit build`). Publishes only from a dispatch on `develop`, and only a SHA (or a merged PR head with the same tree) whose newest GitHub Actions run of `conclusion` and of each required stage is green. Image tag `ghcr.io/<owner>/<repo>:<sha>`, artifact `build-dev-<sha>`.
 - `_deploy-run.yml`: `environment`, `sha`, `promote-branch` (`stage` or `main`), `app-client-id`, `github-environment`, `stack`, `artifact`, `deploy-command`, `health-url`, `smoke-command`. Secrets: `PROMOTE_APP_PRIVATE_KEY` and `DEPLOY_ENV` (secret `KEY=value` lines; every value is masked).
 - `_promote-preflight.yml`: `target` (`stg`, `prd`, `stg-hotfix`), `two-env`, `dev-workflow` (`deploy.yml`), `stg-workflow` (`promote.yml`). Outputs: `sha`, `branch`, `push`.
-- `_tf-plan.yml` / `_tf-apply.yml`: `environment`, `working-directory`, `github-environment`, `env` (non-secret `KEY=value` lines, for example `ARM_USE_OIDC=true`), `aws-role-arn`, `aws-region`, `app-client-id`. Secrets: `TF_ENV`, `APP_PRIVATE_KEY`. The plan outputs `exitcode` (0 or 2), `destroys` and `artifact`. Apply also takes `plan-run-id` and `allow-destroy` (false).
+- `_tf-plan.yml` / `_tf-apply.yml`: `environment`, `working-directory`, `github-environment`, `env` (non-secret `KEY=value` lines, for example `ARM_USE_OIDC=true`), `aws-role-arn`, `aws-region`, `app-client-id`. Secrets: `TF_ENV`, `APP_PRIVATE_KEY`. The plan outputs `exitcode` (0 or 2), `destroys`, `artifact` and `plan-sha256`. Apply also takes `plan-run-id`, `plan-workflow` (`infra.yml`), `plan-sha256` and `allow-destroy` (false).
+
+## Saved Terraform plans
+
+A plan can hold secret values, and the artifacts, logs and summaries of a public repo are public.
+
+- `_tf-plan.yml` keeps the plan text out of the log. The summary lists only resource addresses and actions.
+- The plan is sealed with age (`.github/actions/age`, v1.3.2, checksum pinned) for the required secret `PLAN_AGE_RECIPIENT`. The artifact holds only `tfplan.age`, `tfplan.sha256` and `plan-sha.txt`. With no recipient, the job fails and uploads nothing.
+- `_tf-apply.yml` opens the plan with the required secret `PLAN_AGE_IDENTITY`. With `plan-run-id`, it first checks through the API that the run is a successful `workflow_dispatch` of `plan-workflow` in this repo, on this branch, for this SHA.
+- It downloads the exact artifact `tfplan-<env>-<sha>`, checks the sha256 (and `plan-sha256` when given), and takes the destroy guard from `terraform show -json`.
 
 ## Release
 

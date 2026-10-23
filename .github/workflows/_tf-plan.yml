@@ -1,7 +1,11 @@
-# Terraform plan for one env, started by hand through infra.yml (CI-COST-01). Saves the plan as
-# tfplan-<env>-<sha> (CI-ENV-07) when it has changes and outputs the -detailed-exitcode as
-# `exitcode`: 0 no changes, 2 changes (CI-GATE-06). Caller grants `contents: read` and
-# `id-token: write`.
+# Terraform plan for one env, started by hand through infra.yml (CI-COST-01). When the plan has
+# changes it is sealed with age and saved as tfplan-<env>-<sha> (CI-ENV-07); the
+# -detailed-exitcode is the output `exitcode`: 0 no changes, 2 changes (CI-GATE-06).
+# A plan can hold secret values, and artifacts and logs of a public repo are public. So the plan
+# text never goes to the log, the summary or the artifact: the summary lists only resource
+# addresses and actions, and the artifact holds only the sealed plan, its sha256 and the SHA.
+# With no PLAN_AGE_RECIPIENT the job fails before it uploads anything.
+# Caller grants `contents: read` and `id-token: write`.
 name: tf-plan
 
 on:
@@ -36,6 +40,9 @@ on:
         type: string
         default: ''
     secrets:
+      PLAN_AGE_RECIPIENT:
+        description: age public key (age1...) that seals the saved plan; _tf-apply.yml opens it with the matching PLAN_AGE_IDENTITY
+        required: true
       TF_ENV:
         description: Secret KEY=value lines for Terraform, for example TF_TOKEN_app_terraform_io
         required: false
@@ -52,6 +59,9 @@ on:
       artifact:
         description: Name of the saved plan artifact, or empty when the plan has no changes
         value: ${{ jobs.plan.outputs.artifact }}
+      plan-sha256:
+        description: sha256 of the saved plan before sealing; pass it to _tf-apply.yml plan-sha256
+        value: ${{ jobs.plan.outputs.plan-sha256 }}
 
 permissions: {}
 
@@ -72,6 +82,7 @@ jobs:
       exitcode: ${{ steps.plan.outputs.exitcode }}
       destroys: ${{ steps.show.outputs.destroys }}
       artifact: ${{ steps.plan.outputs.artifact }}
+      plan-sha256: ${{ steps.seal.outputs.sha256 }}
     steps:
       - name: Check out the commit to plan
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,25 +119,28 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           . "$RUNNER_TEMP/fleet-tf.env"
+          # The plan text can hold secret values: keep it out of the public log.
           set +e
-          terraform plan -input=false -lock-timeout=5m -detailed-exitcode -var-file="envs/$ENVIRONMENT.tfvars" -out=tfplan
+          terraform plan -input=false -no-color -lock-timeout=5m -detailed-exitcode -var-file="envs/$ENVIRONMENT.tfvars" -out=tfplan > "$RUNNER_TEMP/plan.log" 2>&1
           ec=$?
           set -e
           if [ "$ec" -ne 0 ] && [ "$ec" -ne 2 ]; then
             echo "::error::terraform plan failed with exit code $ec"
+            # Print only the error blocks, not the plan.
+            sed -n '/Error: /,$p' "$RUNNER_TEMP/plan.log" | head -n 80
             exit "$ec"
           fi
           echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
           if [ "$ec" -eq 2 ]; then echo "artifact=tfplan-$ENVIRONMENT-$SHA" >> "$GITHUB_OUTPUT"; fi
-          echo "$SHA" > plan-sha.txt
 
-      - name: Render the plan and count the destroys
+      - name: List the planned changes
         id: show
         working-directory: ${{ inputs.working-directory }}
         run: |
           . "$RUNNER_TEMP/fleet-tf.env"
-          terraform show -no-color tfplan > plan.txt
-          destroys="$(terraform show -json tfplan | jq '[(.resource_changes // [])[] | select(.change.actions | index("delete"))] | length')"
+          # Addresses and actions only; attribute values stay on the runner.
+          terraform show -json tfplan | jq -r '(.resource_changes // [])[] | select(.change.actions != ["no-op"]) | "\(.change.actions | join("+"))\t\(.address)"' > "$RUNNER_TEMP/changes.tsv"
+          destroys="$(awk -F'\t' '$1 ~ /delete/' "$RUNNER_TEMP/changes.tsv" | wc -l | tr -d ' ')"
           echo "destroys=$destroys" >> "$GITHUB_OUTPUT"
 
       - name: Write the plan summary
@@ -135,26 +149,55 @@ jobs:
           SHA: ${{ github.sha }}
           EXITCODE: ${{ steps.plan.outputs.exitcode }}
           DESTROYS: ${{ steps.show.outputs.destroys }}
-        working-directory: ${{ inputs.working-directory }}
         run: |
           {
             echo "plan · $SHA · $ENVIRONMENT · success · exitcode $EXITCODE · destroys $DESTROYS"
             echo ""
             if [ "$DESTROYS" -gt 0 ]; then echo "**$DESTROYS resources to destroy or replace.**"; echo ""; fi
+            echo "| Action | Count |"
+            echo "| --- | --- |"
+            cut -f1 "$RUNNER_TEMP/changes.tsv" | sort | uniq -c | awk '{ print "| " $2 " | " $1 " |" }'
+            echo ""
             echo '```text'
-            head -c 60000 plan.txt
-            if [ "$(wc -c < plan.txt)" -gt 60000 ]; then echo ""; echo "(plan cut at 60000 characters; see the plan artifact)"; fi
+            head -n 500 "$RUNNER_TEMP/changes.tsv"
+            if [ "$(wc -l < "$RUNNER_TEMP/changes.tsv")" -gt 500 ]; then echo "(list cut at 500 resources)"; fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload the saved plan
+      - name: Install age
+        id: age
+        if: steps.plan.outputs.exitcode == '2'
+        uses: $/.github/actions/age
+
+      - name: Seal the saved plan
+        id: seal
+        if: steps.plan.outputs.exitcode == '2'
+        env:
+          RECIPIENT: ${{ secrets.PLAN_AGE_RECIPIENT }}
+          AGE: ${{ steps.age.outputs.bin }}
+          SHA: ${{ github.sha }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          # Fail closed: never upload a plan that is not sealed.
+          [ -n "$RECIPIENT" ] || { echo "::error::PLAN_AGE_RECIPIENT is empty; the plan is not uploaded"; exit 1; }
+          [[ "$RECIPIENT" =~ ^age1[0-9a-z]+$ ]] || { echo "::error::PLAN_AGE_RECIPIENT is not an age public key (age1...)"; exit 1; }
+          out="$RUNNER_TEMP/plan-upload"
+          mkdir -p "$out"
+          sum="$(sha256sum tfplan | cut -d' ' -f1)"
+          "$AGE" -r "$RECIPIENT" -o "$out/tfplan.age" tfplan
+          echo "$sum" > "$out/tfplan.sha256"
+          echo "$SHA" > "$out/plan-sha.txt"
+          echo "sha256=$sum" >> "$GITHUB_OUTPUT"
+          echo "plan sha256 $sum" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the sealed plan
         if: steps.plan.outputs.exitcode == '2'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.plan.outputs.artifact }}
           path: |
-            ${{ inputs.working-directory }}/tfplan
-            ${{ inputs.working-directory }}/plan.txt
-            ${{ inputs.working-directory }}/plan-sha.txt
+            ${{ runner.temp }}/plan-upload/tfplan.age
+            ${{ runner.temp }}/plan-upload/tfplan.sha256
+            ${{ runner.temp }}/plan-upload/plan-sha.txt
           retention-days: 7
           if-no-files-found: error

@@ -40,6 +40,10 @@ on:
         description: Docker build context, relative to the repo root
         type: string
         default: .
+      required-stages:
+        description: Space-separated ci.yml stage jobs whose newest check run must be green next to conclusion
+        type: string
+        default: lint unit build
       artifact-path:
         description: Build output to upload as build-dev-<sha> for the deploy jobs; empty uploads nothing
         type: string
@@ -87,12 +91,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          STAGES: ${{ inputs.required-stages }}
         run: |
           # CI-DEPLOY-02: the SHA ran a green `conclusion` itself (ci.yml dispatch on develop), or a
-          # merged PR whose head has the same tree had a green `conclusion`.
+          # merged PR whose head has the same tree had a green `conclusion`. Only the newest run of a
+          # check counts, and only from GitHub Actions: an old success does not outvote a new failure.
+          # `conclusion` (CI-CHECK-02) also proves the stages ran when code changed (CI-CHECK-04);
+          # each stage check must be green as well, so a docs-only PR head does not count.
+          latest() {
+            gh api "repos/$REPOSITORY/commits/$1/check-runs?check_name=$2&filter=latest&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | (.status // "missing") + "/" + (.conclusion // "none")'
+          }
+          stage_green() {
+            gh api "repos/$REPOSITORY/commits/$1/check-runs?filter=latest&per_page=100" | jq -r \
+              --arg stage "$2" '[.check_runs[] | select(.app.slug == "github-actions") | select(.name == $stage or (.name | startswith($stage + " / ")))] | sort_by(.started_at) | last | .conclusion == "success"' | grep -qx true
+          }
           passed() {
-            gh api "repos/$REPOSITORY/commits/$1/check-runs?check_name=conclusion" \
-              --jq '[.check_runs[] | select(.conclusion == "success")] | length' | grep -qv '^0$'
+            [ "$(latest "$1" conclusion)" = "completed/success" ] || return 1
+            for stage in $STAGES; do stage_green "$1" "$stage" || { echo "::warning::stage $stage is not green on $1"; return 1; }; done
           }
           if passed "$SHA"; then echo "conclusion passed on $SHA."; exit 0; fi
           head="$(gh api "repos/$REPOSITORY/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null)][0].head.sha // empty')"
