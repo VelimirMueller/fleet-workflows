@@ -1,0 +1,133 @@
+# Stage 2 `unit` (CI-UNIT-*): the full unit suite with coverage, plus a coverage floor check.
+# The runner config keeps its own floor (CI-UNIT-02); this floor is the CI copy and the only one
+# for Go. Caller grants `contents: read`.
+name: ci-unit
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: node, bun, go, python, rust or generic (needs command)
+        type: string
+        required: true
+      working-directory:
+        description: Directory that holds the project manifest
+        type: string
+        default: .
+      tool-version:
+        description: Toolchain version; empty reads the repo pin file
+        type: string
+        default: ''
+      install-command:
+        description: Replaces the default dependency install
+        type: string
+        default: ''
+      command:
+        description: Replaces the default test command; it must write coverage/lcov.info (Go - coverage/cover.out)
+        type: string
+        default: ''
+      coverage-floor:
+        description: Minimum line coverage in percent (CI-UNIT-03); 0 turns the CI check off
+        type: number
+        default: 80
+    outputs:
+      coverage:
+        description: Line coverage in percent, or n/a
+        value: ${{ jobs.unit.outputs.coverage }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    outputs:
+      coverage: ${{ steps.floor.outputs.coverage }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the stack
+        uses: $/.github/actions/setup
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          tool-version: ${{ inputs.tool-version }}
+          install-command: ${{ inputs.install-command }}
+
+      - name: Install cargo-llvm-cov
+        if: inputs.stack == 'rust' && inputs.command == ''
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Run the unit tests with coverage
+        env:
+          STACK: ${{ inputs.stack }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          mkdir -p coverage
+          if [ -n "$COMMAND" ]; then
+            eval "$COMMAND"
+            exit 0
+          fi
+          case "$STACK" in
+            node) pnpm exec vitest run --coverage --coverage.reporter=lcov --coverage.reporter=text-summary ;;
+            bun) bun test --coverage --coverage-reporter=lcov --coverage-reporter=text --coverage-dir=coverage ;;
+            go) go test -race -covermode=atomic -coverprofile=coverage/cover.out ./... ;;
+            python) pytest --cov --cov-branch --cov-report=lcov:coverage/lcov.info --cov-report=term ;;
+            rust)
+              rustup component add llvm-tools-preview
+              cargo llvm-cov --locked --all-features --lcov --output-path coverage/lcov.info
+              ;;
+            generic) echo "::error::stack generic needs the command input"; exit 1 ;;
+            *) echo "::error::stack $STACK has no unit stage"; exit 1 ;;
+          esac
+
+      - name: Check the coverage floor
+        id: floor
+        env:
+          STACK: ${{ inputs.stack }}
+          FLOOR: ${{ inputs.coverage-floor }}
+        run: |
+          if [ "$STACK" = go ] && [ -f coverage/cover.out ]; then
+            pct="$(go tool cover -func=coverage/cover.out | awk '/^total:/ { sub("%", "", $NF); print $NF }')"
+          elif [ -f coverage/lcov.info ]; then
+            pct="$(awk -F: '/^LF:/ { lf += $2 } /^LH:/ { lh += $2 } END { if (lf > 0) printf "%.1f", lh * 100 / lf }' coverage/lcov.info)"
+          else
+            pct=""
+          fi
+          echo "coverage=${pct:-n/a}" >> "$GITHUB_OUTPUT"
+          if awk -v f="$FLOOR" 'BEGIN { exit !(f + 0 <= 0) }'; then
+            echo "Coverage floor check is off (coverage-floor: $FLOOR)."
+            exit 0
+          fi
+          if [ -z "$pct" ]; then
+            echo "::error::no coverage report (coverage/lcov.info or coverage/cover.out); write one or set coverage-floor: 0"
+            exit 1
+          fi
+          if ! awk -v p="$pct" -v f="$FLOOR" 'BEGIN { exit !(p + 0 >= f + 0) }'; then
+            echo "::error::line coverage $pct% is below the floor of $FLOOR% (CI-UNIT-03)"
+            exit 1
+          fi
+          echo "Line coverage $pct% (floor $FLOOR%)."
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ github.sha }}
+          RESULT: ${{ job.status }}
+          COVERAGE: ${{ steps.floor.outputs.coverage || 'n/a' }}
+          FLOOR: ${{ inputs.coverage-floor }}
+        run: echo "unit · $SHA · pr · $RESULT · lines $COVERAGE% (floor $FLOOR%)" >> "$GITHUB_STEP_SUMMARY"

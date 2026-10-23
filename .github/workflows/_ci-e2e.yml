@@ -1,0 +1,124 @@
+# Stage 3 `e2e` (CI-E2E-*): the full suite, Chromium only, one runner. Runs on demand from
+# ci.yml or in the promote.yml preflight, never on a PR (CI-COST-11). Fails when no test ran
+# (CI-E2E-05) and uploads the report only on failure (CI-E2E-04). Caller grants `contents: read`.
+name: ci-e2e
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: node, bun (Playwright defaults) or python, go, rust, generic (need command)
+        type: string
+        required: true
+      working-directory:
+        description: Directory that holds the project manifest
+        type: string
+        default: .
+      tool-version:
+        description: Toolchain version; empty reads the repo pin file
+        type: string
+        default: ''
+      install-command:
+        description: Replaces the default dependency install
+        type: string
+        default: ''
+      command:
+        description: Replaces the default Playwright command; it must write JUnit XML to e2e-junit.xml
+        type: string
+        default: ''
+      environment:
+        description: Label for the report artifact and the summary (pr, stg)
+        type: string
+        default: pr
+      ref:
+        description: Commit SHA to test; empty tests the run SHA
+        type: string
+        default: ''
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out the commit to test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Set up the stack
+        uses: $/.github/actions/setup
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          tool-version: ${{ inputs.tool-version }}
+          install-command: ${{ inputs.install-command }}
+
+      - name: Install the Chromium browser
+        env:
+          STACK: ${{ inputs.stack }}
+        run: |
+          if [ -x node_modules/.bin/playwright ]; then
+            node_modules/.bin/playwright install --with-deps chromium
+          elif [ "$STACK" = python ] && command -v playwright >/dev/null; then
+            playwright install --with-deps chromium
+          else
+            echo "No Playwright found; the command installs its own browser."
+          fi
+
+      - name: Run the e2e suite
+        env:
+          STACK: ${{ inputs.stack }}
+          COMMAND: ${{ inputs.command }}
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: e2e-junit.xml
+          PLAYWRIGHT_JUNIT_OUTPUT_NAME: e2e-junit.xml
+        run: |
+          if [ -n "$COMMAND" ]; then
+            eval "$COMMAND"
+            exit 0
+          fi
+          case "$STACK" in
+            node) pnpm exec playwright test --project=chromium --reporter=list,junit ;;
+            bun) bunx playwright test --project=chromium --reporter=list,junit ;;
+            *) echo "::error::stack $STACK has no default e2e command; set the command input"; exit 1 ;;
+          esac
+
+      - name: Fail when no e2e test ran
+        run: |
+          [ -f e2e-junit.xml ] || { echo "::error::e2e-junit.xml is missing; the e2e command must write JUnit XML (CI-E2E-05)"; exit 1; }
+          total="$(grep -o '<testcase[ >]' e2e-junit.xml | wc -l)"
+          skipped="$(grep -o '<skipped' e2e-junit.xml | wc -l)"
+          ran=$((total - skipped))
+          echo "e2e tests: $total, skipped: $skipped, ran: $ran"
+          [ "$ran" -gt 0 ] || { echo "::error::no e2e test ran (CI-E2E-05)"; exit 1; }
+
+      - name: Upload the e2e report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-report-${{ inputs.environment }}-${{ inputs.ref || github.sha }}
+          path: |
+            ${{ inputs.working-directory }}/playwright-report
+            ${{ inputs.working-directory }}/test-results
+            ${{ inputs.working-directory }}/e2e-junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ inputs.ref || github.sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          RESULT: ${{ job.status }}
+        run: echo "e2e · $SHA · $ENVIRONMENT · $RESULT" >> "$GITHUB_STEP_SUMMARY"

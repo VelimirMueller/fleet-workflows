@@ -1,0 +1,151 @@
+# Terraform apply of one saved plan. The plan comes from this run (infra.yml) or, with
+# plan-run-id, from an earlier run (tf-apply-prd.yml, GOV-PRV-02). Checks out the commit the plan
+# was made for, refuses destroys unless allowed, and applies only the saved plan. Caller grants
+# `contents: read`, `id-token: write` and `actions: read`.
+name: tf-apply
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev, stg or prd
+        type: string
+        required: true
+      working-directory:
+        description: Terraform root module directory
+        type: string
+        default: terraform
+      github-environment:
+        description: GitHub environment to bind (public variant - dev, stg or prd); empty binds none
+        type: string
+        default: ''
+      plan-run-id:
+        description: Run id that saved the plan; empty uses this run
+        type: string
+        default: ''
+      allow-destroy:
+        description: Apply a plan that deletes or replaces resources
+        type: boolean
+        default: false
+      env:
+        description: Non-secret KEY=value lines for Terraform, for example ARM_USE_OIDC=true and the ARM_* ids
+        type: string
+        default: ''
+      aws-role-arn:
+        description: AWS role to assume with OIDC; empty skips the AWS login
+        type: string
+        default: ''
+      aws-region:
+        description: AWS region for the login
+        type: string
+        default: eu-central-1
+      app-client-id:
+        description: Client ID of a GitHub App whose owner-wide token becomes GITHUB_TOKEN (integrations/github provider)
+        type: string
+        default: ''
+    secrets:
+      TF_ENV:
+        description: Secret KEY=value lines for Terraform, for example TF_TOKEN_app_terraform_io
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key of the GitHub App named by app-client-id
+        required: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  apply:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    environment: ${{ inputs.github-environment }}
+    steps:
+      - name: Download the saved plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tfplan-${{ inputs.environment }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/tfplan
+          run-id: ${{ inputs.plan-run-id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Read the planned commit
+        id: plan
+        env:
+          DIR: ${{ runner.temp }}/tfplan
+        run: |
+          [ -s "$DIR/tfplan" ] && [ -s "$DIR/plan-sha.txt" ] || { echo "::error::the saved plan is missing or empty; plan again"; exit 1; }
+          sha="$(tr -d '[:space:]' < "$DIR/plan-sha.txt")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::plan-sha.txt does not hold a commit SHA"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the planned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.plan.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the plan against the run and the destroy guard
+        env:
+          DIR: ${{ inputs.working-directory }}
+          PLAN_DIR: ${{ runner.temp }}/tfplan
+          PLAN_SHA: ${{ steps.plan.outputs.sha }}
+          RUN_SHA: ${{ github.sha }}
+          ALLOW_DESTROY: ${{ inputs.allow-destroy }}
+        run: |
+          git merge-base --is-ancestor "$PLAN_SHA" "$RUN_SHA" || { echo "::error::the plan commit $PLAN_SHA is not in the history of $RUN_SHA"; exit 1; }
+          cp "$PLAN_DIR/tfplan" "$PLAN_DIR/plan.txt" "$DIR/"
+          if [ "$ALLOW_DESTROY" != true ] && grep -Eq '^ *# .* (will be destroyed|must be replaced)' "$DIR/plan.txt"; then
+            echo "::error::the plan destroys or replaces resources; set allow-destroy: true to apply it"
+            exit 1
+          fi
+
+      - name: Create the GitHub App token
+        id: app_token
+        if: inputs.app-client-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0 # zizmor: ignore[github-app]
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }} # zizmor: ignore[github-app] integrations/github manages every repo
+
+      - name: Prepare Terraform
+        uses: $/.github/actions/tf-init
+        with:
+          environment: ${{ inputs.environment }}
+          env: ${{ inputs.env }}
+          working-directory: ${{ inputs.working-directory }}
+          secret-env: ${{ secrets.TF_ENV }}
+          github-token: ${{ steps.app_token.outputs.token }}
+          aws-role-arn: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Apply the saved plan
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          . "$RUNNER_TEMP/fleet-tf.env"
+          set +e
+          terraform apply -input=false -lock-timeout=5m tfplan 2>&1 | tee apply.log
+          ec=${PIPESTATUS[0]}
+          set -e
+          if grep -q "Saved plan is stale" apply.log; then
+            echo "::error::the saved plan is stale; start a new plan, do not re-run this job"
+          fi
+          exit "$ec"
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ steps.plan.outputs.sha || github.sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          RESULT: ${{ job.status }}
+        run: echo "apply · $SHA · $ENVIRONMENT · $RESULT" >> "$GITHUB_STEP_SUMMARY"

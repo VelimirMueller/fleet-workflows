@@ -1,0 +1,158 @@
+# Terraform plan for one env, started by hand through infra.yml (CI-COST-01). Saves the plan as
+# tfplan-<env>-<sha> (CI-ENV-07) when it has changes and outputs the -detailed-exitcode as
+# `exitcode`: 0 no changes, 2 changes (CI-GATE-06). Caller grants `contents: read` and
+# `id-token: write`.
+name: tf-plan
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev, stg or prd
+        type: string
+        required: true
+      working-directory:
+        description: Terraform root module directory
+        type: string
+        default: terraform
+      github-environment:
+        description: GitHub environment to bind (public variant - dev-plan, stg-plan or prd-plan); empty binds none
+        type: string
+        default: ''
+      env:
+        description: Non-secret KEY=value lines for Terraform, for example ARM_USE_OIDC=true and the ARM_* ids
+        type: string
+        default: ''
+      aws-role-arn:
+        description: AWS role to assume with OIDC; empty skips the AWS login
+        type: string
+        default: ''
+      aws-region:
+        description: AWS region for the login
+        type: string
+        default: eu-central-1
+      app-client-id:
+        description: Client ID of a GitHub App whose owner-wide token becomes GITHUB_TOKEN (integrations/github provider)
+        type: string
+        default: ''
+    secrets:
+      TF_ENV:
+        description: Secret KEY=value lines for Terraform, for example TF_TOKEN_app_terraform_io
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key of the GitHub App named by app-client-id
+        required: false
+    outputs:
+      exitcode:
+        description: 0 no changes, 2 changes
+        value: ${{ jobs.plan.outputs.exitcode }}
+      destroys:
+        description: Number of delete and replace actions in the plan
+        value: ${{ jobs.plan.outputs.destroys }}
+      artifact:
+        description: Name of the saved plan artifact, or empty when the plan has no changes
+        value: ${{ jobs.plan.outputs.artifact }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    environment: ${{ inputs.github-environment }}
+    outputs:
+      exitcode: ${{ steps.plan.outputs.exitcode }}
+      destroys: ${{ steps.show.outputs.destroys }}
+      artifact: ${{ steps.plan.outputs.artifact }}
+    steps:
+      - name: Check out the commit to plan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create the GitHub App token
+        id: app_token
+        if: inputs.app-client-id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0 # zizmor: ignore[github-app]
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }} # zizmor: ignore[github-app] integrations/github manages every repo
+
+      - name: Prepare Terraform
+        uses: $/.github/actions/tf-init
+        with:
+          environment: ${{ inputs.environment }}
+          env: ${{ inputs.env }}
+          working-directory: ${{ inputs.working-directory }}
+          secret-env: ${{ secrets.TF_ENV }}
+          github-token: ${{ steps.app_token.outputs.token }}
+          aws-role-arn: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Plan the changes
+        id: plan
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ github.sha }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          . "$RUNNER_TEMP/fleet-tf.env"
+          set +e
+          terraform plan -input=false -lock-timeout=5m -detailed-exitcode -var-file="envs/$ENVIRONMENT.tfvars" -out=tfplan
+          ec=$?
+          set -e
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 2 ]; then
+            echo "::error::terraform plan failed with exit code $ec"
+            exit "$ec"
+          fi
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+          if [ "$ec" -eq 2 ]; then echo "artifact=tfplan-$ENVIRONMENT-$SHA" >> "$GITHUB_OUTPUT"; fi
+          echo "$SHA" > plan-sha.txt
+
+      - name: Render the plan and count the destroys
+        id: show
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          . "$RUNNER_TEMP/fleet-tf.env"
+          terraform show -no-color tfplan > plan.txt
+          destroys="$(terraform show -json tfplan | jq '[(.resource_changes // [])[] | select(.change.actions | index("delete"))] | length')"
+          echo "destroys=$destroys" >> "$GITHUB_OUTPUT"
+
+      - name: Write the plan summary
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ github.sha }}
+          EXITCODE: ${{ steps.plan.outputs.exitcode }}
+          DESTROYS: ${{ steps.show.outputs.destroys }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          {
+            echo "plan · $SHA · $ENVIRONMENT · success · exitcode $EXITCODE · destroys $DESTROYS"
+            echo ""
+            if [ "$DESTROYS" -gt 0 ]; then echo "**$DESTROYS resources to destroy or replace.**"; echo ""; fi
+            echo '```text'
+            head -c 60000 plan.txt
+            if [ "$(wc -c < plan.txt)" -gt 60000 ]; then echo ""; echo "(plan cut at 60000 characters; see the plan artifact)"; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the saved plan
+        if: steps.plan.outputs.exitcode == '2'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.plan.outputs.artifact }}
+          path: |
+            ${{ inputs.working-directory }}/tfplan
+            ${{ inputs.working-directory }}/plan.txt
+            ${{ inputs.working-directory }}/plan-sha.txt
+          retention-days: 7
+          if-no-files-found: error

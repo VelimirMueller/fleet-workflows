@@ -1,0 +1,157 @@
+name: setup
+description: >-
+  Install the toolchain of one stack with its dependency cache, then install the dependencies.
+  Used by the fleet stage workflows through `uses: $/.github/actions/setup`, so it always runs at
+  the same tag or SHA as the calling workflow.
+
+inputs:
+  stack:
+    description: node, bun, go, python, rust, docs or generic. docs and generic install no toolchain.
+    required: true
+  working-directory:
+    description: Directory that holds the project manifest.
+    required: false
+    default: .
+  tool-version:
+    description: >-
+      Toolchain version. Empty reads the repo pin (.nvmrc or .node-version, .bun-version, go.mod,
+      .python-version, rust-toolchain.toml), else node 24, bun latest, the uv default Python, rust stable.
+    required: false
+    default: ''
+  install-command:
+    description: Replaces the default dependency install. Use `true` to skip the install.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Check the stack input
+      env:
+        STACK: ${{ inputs.stack }}
+      shell: bash
+      run: |
+        case "$STACK" in
+          node|bun|go|python|rust|docs|generic) ;;
+          *) echo "::error::stack '$STACK' is not one of node, bun, go, python, rust, docs, generic"; exit 1 ;;
+        esac
+
+    - name: Resolve the toolchain version
+      id: version
+      env:
+        STACK: ${{ inputs.stack }}
+        TOOL_VERSION: ${{ inputs.tool-version }}
+        DIR: ${{ inputs.working-directory }}
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      run: |
+        version="$TOOL_VERSION"
+        file=""
+        if [ -z "$version" ]; then
+          case "$STACK" in
+            node)
+              if [ -f .nvmrc ]; then file="$DIR/.nvmrc"
+              elif [ -f .node-version ]; then file="$DIR/.node-version"
+              else version=24; fi
+              ;;
+            bun)
+              if [ -f .bun-version ]; then file="$DIR/.bun-version"; else version=latest; fi
+              ;;
+            go) file="$DIR/go.mod" ;;
+          esac
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "file=$file" >> "$GITHUB_OUTPUT"
+
+    - name: Install pnpm
+      if: inputs.stack == 'node'
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      with:
+        package_json_file: ${{ inputs.working-directory }}/package.json
+
+    - name: Install Node
+      if: inputs.stack == 'node'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ steps.version.outputs.version }}
+        node-version-file: ${{ steps.version.outputs.file }}
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
+
+    - name: Install Bun
+      if: inputs.stack == 'bun'
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ steps.version.outputs.version }}
+        bun-version-file: ${{ steps.version.outputs.file }}
+
+    - name: Install Go
+      if: inputs.stack == 'go'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ steps.version.outputs.version }}
+        go-version-file: ${{ steps.version.outputs.file }}
+        cache: true
+        cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+    - name: Install uv and Python
+      if: inputs.stack == 'python'
+      uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      with:
+        python-version: ${{ inputs.tool-version }}
+        working-directory: ${{ inputs.working-directory }}
+        enable-cache: true
+
+    - name: Install the Rust toolchain
+      if: inputs.stack == 'rust'
+      env:
+        TOOL_VERSION: ${{ inputs.tool-version }}
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      run: |
+        if [ -n "$TOOL_VERSION" ]; then
+          rustup toolchain install "$TOOL_VERSION" --profile minimal --component rustfmt,clippy
+          rustup default "$TOOL_VERSION"
+        elif [ -f rust-toolchain.toml ] || [ -f rust-toolchain ]; then
+          rustup toolchain install
+        else
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+        fi
+        rustc --version
+
+    - name: Restore the Cargo cache
+      if: inputs.stack == 'rust'
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        workspaces: ${{ inputs.working-directory }}
+
+    - name: Install the dependencies
+      env:
+        STACK: ${{ inputs.stack }}
+        INSTALL_COMMAND: ${{ inputs.install-command }}
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      run: | # zizmor: ignore[github-env] adds only the fixed .venv/bin of the checkout
+        if [ -n "$INSTALL_COMMAND" ]; then
+          eval "$INSTALL_COMMAND"
+          exit 0
+        fi
+        case "$STACK" in
+          node) pnpm install --frozen-lockfile ;;
+          bun) bun install --frozen-lockfile ;;
+          go) go mod download ;;
+          python)
+            if [ -f uv.lock ]; then
+              uv sync --frozen --all-extras
+            else
+              uv venv
+              if [ -f requirements-dev.txt ]; then uv pip install -r requirements-dev.txt; fi
+              if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+              if [ -f pyproject.toml ]; then uv pip install -e ".[dev]" || uv pip install -e .; fi
+            fi
+            echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+            ;;
+          rust) cargo fetch --locked ;;
+          docs|generic) ;;
+        esac

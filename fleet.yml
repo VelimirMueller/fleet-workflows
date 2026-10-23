@@ -1,0 +1,7 @@
+# fleet.yml (VelimirMueller/fleet-standard, STANDARD.md). This repo holds only workflows and docs.
+tier: docs-only
+visibility: public
+exceptions:
+  - rule: CI-STAGE-04
+    value: []
+    reason: The self-test calls its own lint stage at the PR commit; a tag pin would test the last release.

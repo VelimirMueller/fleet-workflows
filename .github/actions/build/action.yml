@@ -1,0 +1,125 @@
+name: build
+description: >-
+  Build the release artifact of one SHA (CI-BUILD-*): the stack build, an optional pack dry run and
+  an optional container image tagged with the full SHA, never `latest`. Used by `_ci-build.yml`
+  (verify) and `_build-publish.yml` (push).
+
+inputs:
+  stack:
+    description: node, bun, go, python, rust, generic or none.
+    required: true
+  working-directory:
+    description: Directory that holds the project manifest.
+    required: false
+    default: .
+  command:
+    description: Replaces the default build command.
+    required: false
+    default: ''
+  pack:
+    description: Run the package pack dry run (CI-BUILD-04, tier library).
+    required: false
+    default: 'false'
+  image:
+    description: Build the container image.
+    required: false
+    default: 'false'
+  dockerfile:
+    description: Dockerfile path, relative to the repo root.
+    required: false
+    default: Dockerfile
+  context:
+    description: Docker build context, relative to the repo root.
+    required: false
+    default: .
+  push:
+    description: Push the image to ghcr.io.
+    required: false
+    default: 'false'
+
+outputs:
+  image:
+    description: Image name with the SHA tag, or empty.
+    value: ${{ steps.name.outputs.image }}
+  digest:
+    description: Image digest, or empty.
+    value: ${{ steps.docker.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run the build
+      if: inputs.stack != 'none'
+      env:
+        STACK: ${{ inputs.stack }}
+        COMMAND: ${{ inputs.command }}
+        IMAGE: ${{ inputs.image }}
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      run: |
+        if [ -n "$COMMAND" ]; then
+          eval "$COMMAND"
+          exit 0
+        fi
+        case "$STACK" in
+          node) pnpm run --if-present build ;;
+          bun) if jq -e '.scripts.build' package.json >/dev/null; then bun run build; fi ;;
+          go) go build ./... ;;
+          python) uv build ;;
+          rust) cargo build --release --locked ;;
+          generic)
+            if [ "$IMAGE" != true ]; then echo "::error::stack generic needs the command input"; exit 1; fi
+            ;;
+          *) echo "::error::stack $STACK has no build stage"; exit 1 ;;
+        esac
+
+    - name: Run the pack dry run
+      if: inputs.pack == 'true'
+      env:
+        STACK: ${{ inputs.stack }}
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/pack"
+        case "$STACK" in
+          node) pnpm pack --pack-destination "$RUNNER_TEMP/pack" ;;
+          bun) bun pm pack --destination "$RUNNER_TEMP/pack" ;;
+          python) uvx twine check dist/* ;;
+          rust) cargo package --locked ;;
+          go) echo "Go modules have no pack step; go build already ran." ;;
+          *) echo "::error::stack $STACK has no pack dry run; set pack: false or use command"; exit 1 ;;
+        esac
+        ls -la "$RUNNER_TEMP/pack" 2>/dev/null || true
+
+    - name: Name the image
+      id: name
+      if: inputs.image == 'true'
+      env:
+        REPOSITORY: ${{ github.repository }}
+        SHA: ${{ github.sha }}
+      shell: bash
+      run: echo "image=ghcr.io/${REPOSITORY,,}:$SHA" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Docker Buildx
+      if: inputs.image == 'true'
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    - name: Log in to the GitHub container registry
+      if: inputs.image == 'true' && inputs.push == 'true'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - name: Build the image
+      id: docker
+      if: inputs.image == 'true'
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        tags: ${{ steps.name.outputs.image }}
+        push: ${{ inputs.push == 'true' }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=min

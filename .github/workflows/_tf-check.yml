@@ -1,0 +1,42 @@
+# Terraform static checks without credentials (CI-LINT-04). `_ci-lint.yml` runs the same steps
+# with `terraform: true`; call this file directly only in a repo whose lint stage is Terraform
+# alone. Caller grants `contents: read`.
+name: tf-check
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Terraform root module directory
+        type: string
+        default: terraform
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the Terraform
+        uses: $/.github/actions/tf-check
+        with:
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ github.sha }}
+          RESULT: ${{ job.status }}
+        run: echo "tf-check · $SHA · pr · $RESULT" >> "$GITHUB_STEP_SUMMARY"

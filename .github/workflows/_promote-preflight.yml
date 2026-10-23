@@ -1,0 +1,146 @@
+# `promote.yml` preflight (CI-PROMOTE-02): runs before any approval and resolves the one SHA that
+# the promotion pushes and deploys. Checks: fast-forward possible (or main already holds a merged
+# hotfix), main ⊆ stage ⊆ develop, the previous env deployed this SHA green, no other promotion in
+# flight. Caller grants `contents: read` and `actions: read`.
+name: promote-preflight
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: stg, prd or stg-hotfix (fast-forward stage to a hotfix on main)
+        type: string
+        required: true
+      two-env:
+        description: Repo has no stage branch (CI-PROMOTE-06); prd fast-forwards main from develop
+        type: boolean
+        default: false
+      dev-workflow:
+        description: Workflow whose green run at the SHA proves the dev deploy (run-name holds "· dev ·")
+        type: string
+        default: deploy.yml
+      stg-workflow:
+        description: Workflow whose green run at the SHA proves the stg deploy (run-name holds "· stg ·")
+        type: string
+        default: promote.yml
+    outputs:
+      sha:
+        description: The verified SHA to push and deploy
+        value: ${{ jobs.preflight.outputs.sha }}
+      branch:
+        description: The branch to fast-forward (stage or main)
+        value: ${{ jobs.preflight.outputs.branch }}
+      push:
+        description: true when the branch needs the fast-forward, false when it already holds the SHA
+        value: ${{ jobs.preflight.outputs.push }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preflight:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+      branch: ${{ steps.check.outputs.branch }}
+      push: ${{ steps.check.outputs.push }}
+    steps:
+      - name: Check out the branches
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check that the promotion can go ahead
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          RUN_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          TARGET: ${{ inputs.target }}
+          TWO_ENV: ${{ inputs.two-env }}
+          DEV_WORKFLOW: ${{ inputs.dev-workflow }}
+          STG_WORKFLOW: ${{ inputs.stg-workflow }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$REF" = "refs/heads/develop" ] || fail "promote runs only on refs/heads/develop, not $REF (CI-ENV-02)"
+          ancestor() { git merge-base --is-ancestor "$1" "$2"; }
+          head() { git rev-parse "refs/remotes/origin/$1"; }
+          green() { # green <workflow> <env> <sha>: a successful run at the SHA whose run-name names the env
+            gh run list --workflow "$1" --commit "$3" --status success --limit 50 --json displayTitle \
+              --jq "[.[] | select(.displayTitle | contains(\" · $2 · \"))] | length" | grep -qv '^0$'
+          }
+
+          develop="$(head develop)"
+          main="$(head main)"
+          [ "$develop" = "$RUN_SHA" ] || fail "develop moved to $develop after this run started at $RUN_SHA; start a new run"
+          if [ "$TWO_ENV" = true ]; then
+            stage=""
+            [ "$TARGET" = prd ] || fail "a two-env repo promotes only to prd (CI-PROMOTE-06)"
+          else
+            git rev-parse -q --verify refs/remotes/origin/stage >/dev/null || fail "no stage branch; set two-env: true or create stage"
+            stage="$(head stage)"
+          fi
+
+          case "$TARGET" in
+            stg)
+              sha="$develop"; branch=stage
+              ancestor "$main" "$stage" || fail "main is not contained in stage; finish the hotfix with target stg-hotfix first"
+              ancestor "$stage" "$develop" || fail "stage is not contained in develop; back-merge it first"
+              green "$DEV_WORKFLOW" dev "$sha" || fail "no green $DEV_WORKFLOW run deployed $sha to dev"
+              ;;
+            prd)
+              branch=main
+              if [ "$TWO_ENV" = true ]; then
+                sha="$develop"
+                ancestor "$main" "$develop" || fail "main is not contained in develop; back-merge it first"
+                green "$DEV_WORKFLOW" dev "$sha" || fail "no green $DEV_WORKFLOW run deployed $sha to dev"
+              elif ! ancestor "$main" "$stage"; then
+                # A hotfix merged into main (GOV-RS-04): deploy main as it is, no fast-forward.
+                sha="$main"
+                ancestor "$stage" "$main" || fail "main and stage diverged; repair the chain first"
+              else
+                sha="$stage"
+                ancestor "$stage" "$develop" || fail "stage is not contained in develop; back-merge it first"
+                green "$STG_WORKFLOW" stg "$sha" || fail "no green $STG_WORKFLOW run deployed $sha to stg"
+              fi
+              ;;
+            stg-hotfix)
+              [ "$TWO_ENV" != true ] || fail "a two-env repo has no stage"
+              sha="$main"; branch=stage
+              ancestor "$stage" "$main" || fail "stage is not contained in main; stg-hotfix only follows a hotfix on main"
+              ;;
+            *) fail "target '$TARGET' is not stg, prd or stg-hotfix" ;;
+          esac
+
+          current="$(head "$branch")"
+          if [ "$current" = "$sha" ]; then push=false; else push=true; fi
+          if [ "$push" = true ]; then ancestor "$current" "$sha" || fail "$branch cannot fast-forward to $sha"; fi
+
+          busy="$(gh run list --workflow "$STG_WORKFLOW" --limit 20 --json databaseId,status \
+            --jq "[.[] | select(.databaseId != $RUN_ID and (.status == \"in_progress\" or .status == \"queued\" or .status == \"waiting\"))] | length")"
+          [ "$busy" = 0 ] || fail "another $STG_WORKFLOW run is in flight; wait for it to end"
+
+          {
+            echo "sha=$sha"
+            echo "branch=$branch"
+            echo "push=$push"
+          } >> "$GITHUB_OUTPUT"
+          echo "Promote $sha to $TARGET ($branch, fast-forward: $push)."
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ steps.check.outputs.sha || github.sha }}
+          TARGET: ${{ inputs.target }}
+          RESULT: ${{ job.status }}
+        run: echo "preflight · $SHA · $TARGET · $RESULT" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,241 @@
+# One deploy of one SHA to one env: `deploy-dev` in deploy.yml, `promote-stg` and `promote-prd` in
+# promote.yml. With `promote-branch` it first fast-forwards stage or main to the SHA with the
+# promotion App token (CI-PROMOTE-04). Then it runs the repo's deploy command, waits until the
+# version endpoint reports `{ sha, env }` (CI-ENV-06) and runs the smoke command (CI-E2E-03).
+# Starts only from a workflow_dispatch on develop. Caller grants `contents: read`,
+# `id-token: write` and `actions: read`.
+name: deploy-run
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev, stg or prd
+        type: string
+        required: true
+      sha:
+        description: Commit to deploy; empty deploys the run SHA (deploy-dev). promote.yml passes the preflight SHA.
+        type: string
+        default: ''
+      promote-branch:
+        description: Branch to fast-forward to the SHA first (stage for stg, main for prd); empty pushes nothing
+        type: string
+        default: ''
+      app-client-id:
+        description: Client ID of the promotion GitHub App (vars.PROMOTE_APP_CLIENT_ID); needed with promote-branch
+        type: string
+        default: ''
+      github-environment:
+        description: GitHub environment to bind (public variant - dev, stg or prd); empty binds none (private-free)
+        type: string
+        default: ''
+      stack:
+        description: Toolchain for the deploy command - node, bun, go, python, rust or none
+        type: string
+        default: none
+      working-directory:
+        description: Directory the commands run in
+        type: string
+        default: .
+      tool-version:
+        description: Toolchain version; empty reads the repo pin file
+        type: string
+        default: ''
+      install-command:
+        description: Replaces the default dependency install
+        type: string
+        default: ''
+      artifact:
+        description: Download build-dev-<sha> from the deploy.yml run of the SHA into $BUILD_DIR
+        type: boolean
+        default: false
+      deploy-command:
+        description: Deploys $SHA to $ENVIRONMENT (also gets $IMAGE and $BUILD_DIR); empty deploys nothing
+        type: string
+        default: ''
+      health-url:
+        description: Version endpoint that must report { sha, env } after the deploy; empty skips the check
+        type: string
+        default: ''
+      smoke-command:
+        description: Smoke tests against the deployed env, for example the @smoke tests; empty skips them
+        type: string
+        default: ''
+    secrets:
+      PROMOTE_APP_PRIVATE_KEY:
+        description: Private key of the promotion GitHub App; needed with promote-branch
+        required: false
+      DEPLOY_ENV:
+        description: Secret KEY=value lines exported to the deploy and smoke commands; each value is masked
+        required: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  run:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    environment: ${{ inputs.github-environment }}
+    steps:
+      - name: Check the inputs and the ref
+        id: inputs
+        env:
+          REF: ${{ github.ref }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          BRANCH: ${{ inputs.promote-branch }}
+          CLIENT_ID: ${{ inputs.app-client-id }}
+          HAS_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY != '' }}
+          INPUT_SHA: ${{ inputs.sha }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$REF" = "refs/heads/develop" ] || fail "deploys start only from refs/heads/develop, not $REF (CI-ENV-02)"
+          case "$ENVIRONMENT:$BRANCH" in
+            dev:|stg:|prd:|stg:stage|prd:main) ;;
+            *) fail "environment '$ENVIRONMENT' with promote-branch '$BRANCH' is not allowed (dev, stg+stage, prd+main)" ;;
+          esac
+          if [ -n "$BRANCH" ]; then
+            [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ] || fail "promote-branch needs app-client-id and the PROMOTE_APP_PRIVATE_KEY secret"
+          fi
+          sha="${INPUT_SHA:-$RUN_SHA}"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "sha '$sha' is not a full commit SHA"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the commit to deploy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.inputs.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create the promotion App token
+        id: app_token
+        if: inputs.promote-branch != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-workflows: write
+
+      - name: Push the SHA to the branch as a fast-forward
+        if: inputs.promote-branch != ''
+        env:
+          TOKEN: ${{ steps.app_token.outputs.token }}
+          BRANCH: ${{ inputs.promote-branch }}
+          SHA: ${{ steps.inputs.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          current="$(git rev-parse "refs/remotes/origin/$BRANCH")"
+          if [ "$current" = "$SHA" ]; then
+            echo "$BRANCH already holds $SHA; nothing to push."
+            exit 0
+          fi
+          git merge-base --is-ancestor "$current" "$SHA" || { echo "::error::$BRANCH cannot fast-forward to $SHA"; exit 1; }
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.$SERVER/.extraheader=AUTHORIZATION: basic $auth" push "$SERVER/$REPOSITORY.git" "$SHA:refs/heads/$BRANCH"
+          echo "Fast-forwarded $BRANCH from $current to $SHA."
+
+      - name: Set up the stack
+        if: inputs.stack != 'none'
+        uses: $/.github/actions/setup
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          tool-version: ${{ inputs.tool-version }}
+          install-command: ${{ inputs.install-command }}
+
+      - name: Find the build run of the SHA
+        id: build_run
+        if: inputs.artifact && inputs.environment != 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.inputs.outputs.sha }}
+        run: |
+          id="$(gh run list --workflow deploy.yml --commit "$SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          [ -n "$id" ] || { echo "::error::no green deploy.yml run built $SHA; artifacts expire after 7 days, so re-run deploy.yml"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Download the build artifact
+        if: inputs.artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-dev-${{ steps.inputs.outputs.sha }}
+          path: ${{ runner.temp }}/build
+          run-id: ${{ steps.build_run.outputs.id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Deploy the SHA
+        if: inputs.deploy-command != ''
+        env:
+          COMMAND: ${{ inputs.deploy-command }}
+          SECRET_ENV: ${{ secrets.DEPLOY_ENV }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ steps.inputs.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+          BUILD_DIR: ${{ runner.temp }}/build
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] && [ "$key" != "$line" ] || { echo "::error::a DEPLOY_ENV line is not KEY=value"; exit 1; }
+            value="${line#*=}"
+            if [ -n "$value" ]; then echo "::add-mask::$value"; fi
+            export "$key=$value"
+          done <<< "$SECRET_ENV"
+          unset SECRET_ENV
+          export IMAGE="ghcr.io/${REPOSITORY,,}:$SHA"
+          eval "$COMMAND"
+
+      - name: Wait for the version endpoint to report the SHA
+        if: inputs.health-url != ''
+        env:
+          HEALTH_URL: ${{ inputs.health-url }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ steps.inputs.outputs.sha }}
+        run: |
+          for _ in $(seq 1 30); do
+            body="$(curl -fsS --max-time 10 "$HEALTH_URL" || true)"
+            got_sha="$(jq -r '.sha // empty' <<< "$body" 2>/dev/null || true)"
+            got_env="$(jq -r '.env // empty' <<< "$body" 2>/dev/null || true)"
+            if [ "${#got_sha}" -ge 7 ] && [[ "$SHA" == "$got_sha"* ]] && [ "$got_env" = "$ENVIRONMENT" ]; then
+              echo "$HEALTH_URL reports $got_sha on $got_env."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$HEALTH_URL did not report { sha: $SHA, env: $ENVIRONMENT } within 5 minutes (CI-ENV-06)"
+          exit 1
+
+      - name: Run the smoke tests
+        if: inputs.smoke-command != ''
+        env:
+          COMMAND: ${{ inputs.smoke-command }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ steps.inputs.outputs.sha }}
+          HEALTH_URL: ${{ inputs.health-url }}
+        working-directory: ${{ inputs.working-directory }}
+        run: eval "$COMMAND"
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ steps.inputs.outputs.sha || github.sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          BRANCH: ${{ inputs.promote-branch }}
+          RESULT: ${{ job.status }}
+        run: echo "deploy · $SHA · $ENVIRONMENT · $RESULT${BRANCH:+ · fast-forward $BRANCH}" >> "$GITHUB_STEP_SUMMARY"

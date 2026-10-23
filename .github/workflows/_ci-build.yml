@@ -1,0 +1,90 @@
+# Stage 4 `build` on a PR or a ci.yml dispatch: verify that the artifact builds and publish nothing
+# (CI-BUILD-02). Publishing is `_build-publish.yml`, called from deploy.yml. Caller grants
+# `contents: read`.
+name: ci-build
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: node, bun, go, python, rust, generic (needs command, or image) or none (image only)
+        type: string
+        required: true
+      working-directory:
+        description: Directory that holds the project manifest
+        type: string
+        default: .
+      tool-version:
+        description: Toolchain version; empty reads the repo pin file
+        type: string
+        default: ''
+      install-command:
+        description: Replaces the default dependency install
+        type: string
+        default: ''
+      command:
+        description: Replaces the default build command
+        type: string
+        default: ''
+      pack:
+        description: Run the pack dry run (CI-BUILD-04; set true for tier library)
+        type: boolean
+        default: false
+      image:
+        description: Build the container image (not pushed)
+        type: boolean
+        default: false
+      dockerfile:
+        description: Dockerfile path, relative to the repo root
+        type: string
+        default: Dockerfile
+      context:
+        description: Docker build context, relative to the repo root
+        type: string
+        default: .
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the stack
+        if: inputs.stack != 'none'
+        uses: $/.github/actions/setup
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          tool-version: ${{ inputs.tool-version }}
+          install-command: ${{ inputs.install-command }}
+
+      - name: Build without publishing
+        uses: $/.github/actions/build
+        with:
+          stack: ${{ inputs.stack }}
+          working-directory: ${{ inputs.working-directory }}
+          command: ${{ inputs.command }}
+          pack: ${{ inputs.pack }}
+          image: ${{ inputs.image }}
+          dockerfile: ${{ inputs.dockerfile }}
+          context: ${{ inputs.context }}
+          push: false
+
+      - name: Write the stage summary
+        if: always()
+        env:
+          SHA: ${{ github.sha }}
+          RESULT: ${{ job.status }}
+        run: echo "build · $SHA · pr · $RESULT · verify only" >> "$GITHUB_STEP_SUMMARY"
