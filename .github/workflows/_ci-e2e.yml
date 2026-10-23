@@ -87,9 +87,10 @@ jobs:
           PLAYWRIGHT_JUNIT_OUTPUT_NAME: e2e-junit.xml
         run: |
           if [ -n "$COMMAND" ]; then
-            # Pass the exit code on explicitly; a failing command fails the stage.
-            eval "$COMMAND" && exit 0
-            exit $?
+            # Run in a child bash with errexit and pipefail: any failing line fails the stage.
+            # (`eval ... && exit 0` turned errexit off inside the command.)
+            bash -eo pipefail -c "$COMMAND"
+            exit 0
           fi
           case "$STACK" in
             node) pnpm exec playwright test --project=chromium --reporter=list,junit ;;
