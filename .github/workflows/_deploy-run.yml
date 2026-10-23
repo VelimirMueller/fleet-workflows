@@ -137,6 +137,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           SERVER: ${{ github.server_url }}
         run: |
+          # A plain push (never --force) is fast-forward only on the server, so a branch that moved
+          # since the checkout makes the push fail; it can never rewind the branch.
           current="$(git rev-parse "refs/remotes/origin/$BRANCH")"
           if [ "$current" = "$SHA" ]; then
             echo "$BRANCH already holds $SHA; nothing to push."
