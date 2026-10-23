@@ -8,7 +8,8 @@ are in fleet-standard: `templates/<tier>/<variant>/` and `docs/rollout.md`.
 - Pin a tag: `uses: VelimirMueller/fleet-workflows/.github/workflows/<file>@v1`.
 - This repo is public, so public and private repos can both call it.
 - Every action inside is pinned by SHA. The workflows reach their own composite actions with
-  `uses: $/.github/actions/<name>`, so an action always runs at the same tag as the workflow.
+  `uses: $/.github/actions/<name>` (GitHub's self-repository syntax), so an action always runs at
+  the same tag as the workflow. A `./` path would look in the caller's checkout instead.
 - `v1` is a moving major tag. A breaking input change needs `v2`.
 
 ## Workflows

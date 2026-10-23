@@ -29,6 +29,8 @@ jobs:
         with:
           persist-credentials: false
 
+      # `$/` is GitHub's self-repository syntax: the action at this workflow's own repo and ref,
+      # not in the caller's checkout, where a `./` path would look.
       - name: Check the Terraform
         uses: $/.github/actions/tf-check
         with:

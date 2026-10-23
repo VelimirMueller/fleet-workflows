@@ -148,6 +148,8 @@ jobs:
           git -c "http.$SERVER/.extraheader=AUTHORIZATION: basic $auth" push "$SERVER/$REPOSITORY.git" "$SHA:refs/heads/$BRANCH"
           echo "Fast-forwarded $BRANCH from $current to $SHA."
 
+      # `$/` is GitHub's self-repository syntax: the action at this workflow's own repo and ref,
+      # not in the caller's checkout, where a `./` path would look.
       - name: Set up the stack
         if: inputs.stack != 'none'
         uses: $/.github/actions/setup
@@ -208,7 +210,8 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment }}
           SHA: ${{ steps.inputs.outputs.sha }}
         run: |
-          for _ in $(seq 1 30); do
+          end=$((SECONDS + 300))
+          while [ "$SECONDS" -lt "$end" ]; do
             body="$(curl -fsS --max-time 10 "$HEALTH_URL" || true)"
             got_sha="$(jq -r '.sha // empty' <<< "$body" 2>/dev/null || true)"
             got_env="$(jq -r '.env // empty' <<< "$body" 2>/dev/null || true)"
