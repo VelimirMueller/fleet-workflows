@@ -1,4 +1,5 @@
-# Self-test: lint every workflow and composite action of this repo with the repo's own lint stage.
+# Self-test: run this repo's own lint stage (stack docs) on every workflow, action and doc. It also
+# proves on each PR that the `$/` self-repository action references resolve.
 # Budget rules: pull_request only, draft PRs skip, a changes job instead of `paths` (CI-COST-10),
 # one concurrency group per PR, timeouts on every job.
 name: ci
@@ -48,7 +49,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/_ci-lint.yml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects $/ in a job uses
     with:
-      stack: none
+      stack: docs
 
   conclusion:
     needs: [changes, lint]

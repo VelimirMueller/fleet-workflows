@@ -15,7 +15,7 @@ are in fleet-standard: `templates/<tier>/<variant>/` and `docs/rollout.md`.
 ## Workflows
 
 | File | Stage | Caller job | Caller permissions |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `_ci-lint.yml` | `lint` | `ci.yml` `lint` | `contents: read` |
 | `_ci-unit.yml` | `unit` | `ci.yml` `unit` | `contents: read` |
 | `_ci-e2e.yml` | `e2e` | `ci.yml` `e2e`, `promote.yml` `e2e` | `contents: read` |
@@ -35,7 +35,7 @@ the whole run at startup with no jobs and no log.
 The four CI stages share these inputs:
 
 | Input | Type | Default | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `stack` | string | required | `node` (pnpm), `bun`, `go`, `python` (uv), `rust`, `generic` (needs `command`). `_ci-lint.yml` also takes `docs` (markdownlint + offline link check) and `none` (only workflow and Terraform checks). |
 | `working-directory` | string | `.` | Directory that holds the project manifest |
 | `tool-version` | string | `''` | Empty reads `.nvmrc`/`.node-version`, `.bun-version`, `go.mod`, `.python-version`, `rust-toolchain.toml`; otherwise node 24, bun latest, rust stable |

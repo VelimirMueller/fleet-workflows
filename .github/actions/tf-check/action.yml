@@ -54,8 +54,8 @@ runs:
       shell: bash
       run: |
         config=()
-        if [ -f .tflint.hcl ]; then config=(--config "$PWD/.tflint.hcl"); fi
-        cd "$DIR" || exit 1
+        if [ -f "$GITHUB_WORKSPACE/.tflint.hcl" ]; then config=(--config "$GITHUB_WORKSPACE/.tflint.hcl"); fi
+        cd "$GITHUB_WORKSPACE/$DIR" || exit 1
         tflint "${config[@]}" --init
         tflint "${config[@]}" --recursive --format compact
 
@@ -63,4 +63,4 @@ runs:
       env:
         DIR: ${{ inputs.working-directory }}
       shell: bash
-      run: docker run --rm -v "$PWD:/src:ro" aquasec/trivy:0.76.1 config --exit-code 1 --severity HIGH,CRITICAL "/src/$DIR"
+      run: docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" aquasec/trivy:0.76.1 config --exit-code 1 --severity HIGH,CRITICAL "/src/$DIR"
