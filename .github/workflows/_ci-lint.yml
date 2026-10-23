@@ -77,8 +77,9 @@ jobs:
           COMMAND: ${{ inputs.command }}
         run: |
           if [ -n "$COMMAND" ]; then
-            eval "$COMMAND"
-            exit 0
+            # Pass the exit code on explicitly; a failing command fails the stage.
+            eval "$COMMAND" && exit 0
+            exit $?
           fi
           bin() { if [ -x "node_modules/.bin/$1" ]; then echo "node_modules/.bin/$1"; else echo "bunx $2"; fi; }
           case "$STACK" in

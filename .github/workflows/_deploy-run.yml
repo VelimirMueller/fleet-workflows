@@ -58,7 +58,7 @@ on:
         type: string
         default: ''
       smoke-command:
-        description: Smoke tests against the deployed env, for example the @smoke tests; empty skips them
+        description: Smoke tests against the deployed env, for example the @smoke tests; they get ENVIRONMENT, SHA and HEALTH_URL but no DEPLOY_ENV secrets; empty skips them
         type: string
         default: ''
     secrets:
