@@ -19,7 +19,7 @@ are in fleet-standard: `templates/<tier>/<variant>/` and `docs/rollout.md`.
 | `_ci-unit.yml` | `unit` | `ci.yml` `unit` | `contents: read` |
 | `_ci-e2e.yml` | `e2e` | `ci.yml` `e2e`, `promote.yml` `e2e` | `contents: read` |
 | `_ci-build.yml` | `build`, verify only | `ci.yml` `build` | `contents: read` |
-| `_build-publish.yml` | `build`, publish | `deploy.yml` `build` | `contents: read`, `packages: write`, `checks: read`, `pull-requests: read` |
+| `_build-publish.yml` | `build`, publish, then `sign` | `deploy.yml` `build` | `contents: read`, `packages: write`, `checks: read`, `pull-requests: read`, `id-token: write` (since v0.0.4, also with `sign: false`) |
 | `_deploy-run.yml` | deploy, optional fast-forward | `deploy.yml` `deploy-dev`, `promote.yml` `promote-stg`/`promote-prd` | `contents: read`, `id-token: write`, `actions: read` |
 | `_promote-preflight.yml` | promotion preflight | `promote.yml` `preflight` | `contents: read`, `actions: read` |
 | `_tf-check.yml` | Terraform static checks | a repo whose lint is Terraform only | `contents: read` |
@@ -48,6 +48,12 @@ Stage-specific inputs:
 - `_ci-e2e.yml`: `environment` (`pr`), `ref` (''). Node and bun default to `playwright test --project=chromium`. The command must write JUnit XML to `e2e-junit.xml`, because a run where no test ran fails.
 - `_ci-build.yml`: `pack` (false; true for tier `library`), `image` (false), `dockerfile`, `context`.
 - `_build-publish.yml`: `image`, `dockerfile`, `context`, `artifact-path`, `required-stages` (`lint unit build`). Publishes only from a dispatch on `develop`, and only a SHA (or a merged PR head with the same tree) whose newest GitHub Actions run of `conclusion` and of each required stage is green. Image tag `ghcr.io/<owner>/<repo>:<sha>`, artifact `build-dev-<sha>`.
+  Image supply chain (since v0.0.4, all on by default when `image: true`):
+  - `build-args` (`''`): extra `KEY=value` lines. `COMMIT=<sha>` is always passed first; a line here overrides it. Never a secret: build args land in the image history and in the provenance.
+  - `scan` (true), `scan-severity` (`CRITICAL`): the image is built locally first and scanned with Trivy; a finding at that severity fails the job before anything is pushed. The push build runs in the same Buildx builder and hits its layer cache, so it pushes the scanned layers; the SBOM and provenance describe the pushed image itself.
+  - `attest` (true): BuildKit attaches an SBOM and a `mode=max` provenance attestation to the pushed image. The `digest` output is then the digest of the image index.
+  - `sign` (true): the separate `sign` job signs the pushed digest with cosign keyless (Sigstore, GitHub OIDC). It is the only job with `id-token: write`. Verify with `cosign verify ghcr.io/<owner>/<repo>@<digest> --certificate-identity-regexp '^https://github.com/VelimirMueller/fleet-workflows/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+  - The caller job grants `id-token: write` even with `sign: false`: GitHub checks the permissions of every called job at startup.
 - `_deploy-run.yml`: `environment`, `sha`, `promote-branch` (`stage` or `main`), `app-client-id`, `github-environment`, `stack`, `artifact`, `deploy-command`, `health-url`, `smoke-command`. Secrets: `PROMOTE_APP_PRIVATE_KEY` and `DEPLOY_ENV` (secret `KEY=value` lines; every value is masked).
 - `_promote-preflight.yml`: `target` (`stg`, `prd`, `stg-hotfix`), `two-env`, `dev-workflow` (`deploy.yml`), `stg-workflow` (`promote.yml`). Outputs: `sha`, `branch`, `push`.
 - `_tf-plan.yml` / `_tf-apply.yml`: `environment`, `working-directory`, `github-environment`, `env` (non-secret `KEY=value` lines, for example `ARM_USE_OIDC=true`), `aws-role-arn`, `aws-region`, `app-client-id`. Secrets: `TF_ENV`, `APP_PRIVATE_KEY`. The plan outputs `exitcode` (0 or 2), `destroys`, `artifact` and `plan-sha256`. Apply also takes `plan-run-id`, `plan-workflow` (`infra.yml`), `plan-sha256` and `allow-destroy` (false).

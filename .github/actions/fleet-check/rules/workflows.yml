@@ -154,7 +154,7 @@ rules:
     level: MUST
     exception_allowed: false
     default: the set
-    rule: "`environment:` names come from one closed set: `dev`, `stg`, `prd`, `dev-plan`, `stg-plan`, `prd-plan`, `promote-stg`, `promote-prd`, `tf-apply-prd`. An expression may only read `needs.setup.outputs.*` or `inputs.*`."
+    rule: "`environment:` names come from one closed set: `dev`, `stg`, `prd`, `dev-plan`, `stg-plan`, `prd-plan`, `promote-stg`, `promote-prd`, `tf-apply-prd`. A job that deploys GitHub Pages (`actions/deploy-pages`) may also use `github-pages`, the environment the Pages integration creates (GOV-ENV-11). An expression may only read `needs.setup.outputs.*` or `inputs.*`."
     check: static
     params:
       environments:
@@ -167,6 +167,8 @@ rules:
         - promote-stg
         - promote-prd
         - tf-apply-prd
+      pages_environment: github-pages
+      pages_action: actions/deploy-pages
       expression_pattern: ^\$\{\{ (needs\.setup\.outputs|inputs)\.[a-z_-]+ \}\}$
   - id: WF-NAME-07
     level: MUST
@@ -285,6 +287,29 @@ rules:
     check: static
     params:
       shell: bash
+      published_shells:
+        - bash --noprofile --norc -eo pipefail {0}
+        - bash --noprofile --norc -euo pipefail {0}
+  - id: WF-PUB-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "A `library` repo that publishes reusable workflows under names its callers pin by path (`<file>.yml@<ref>`, no leading `_`) lists them in `fleet.yml` `publisher.workflows`. A listed file exists and has a `workflow_call` trigger. It is then checked as a reusable workflow, except: its file name, its job ids (taxonomy row, CI-STAGE-01) and its deploy guards (CI-COST-01, CI-COST-02, checked on the caller job) are its callers' API and are not checked, and it may spell out `defaults.run.shell` as `bash --noprofile --norc -eo pipefail {0}` or with `-euo` (WF-TOP-02). The role applies to listed files only and nowhere outside tier `library`."
+    check: static
+    params:
+      tiers:
+        - library
+  - id: WF-PUB-02
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "A selftest job of a publisher repo tests its own actions on the runner and deploys nothing. `fleet.yml` `publisher.selftest_jobs` lists it per entry workflow; then it is not a deploy job (CI-COST-01, CI-COST-02, CI-COST-06). It qualifies only when it binds no environment, calls no workflow, reads no secret, logs in to no cloud, runs no deploy command, takes deploy, release, publish or pages actions only from this repo (`./`, `$/`), and its own `permissions` grant at most `contents: read`, `id-token: write`, `attestations: write`. A listed job that does not qualify stays a deploy job."
+    check: static
+    params:
+      allowed_permissions:
+        contents: read
+        id-token: write
+        attestations: write
   - id: WF-TOP-03
     rule: Moved to CI-COST-06.
     moved_to: CI-COST-06

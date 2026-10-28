@@ -1,5 +1,7 @@
-# fleet.yml (VelimirMueller/fleet-standard, STANDARD.md). This repo holds only workflows and docs.
-tier: docs-only
+# fleet.yml (VelimirMueller/fleet-standard, STANDARD.md). Tier library: this repo ships code that
+# callers run (reusable workflows, composite actions, the fleet-check JS action), released as tags.
+# All reusable workflows start with `_`, so it needs no publisher role (WF-PUB-01).
+tier: library
 visibility: public
 exceptions:
   - rule: CI-STAGE-04
