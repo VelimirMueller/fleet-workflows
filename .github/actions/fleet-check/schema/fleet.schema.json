@@ -25,6 +25,33 @@
         "reason": { "$ref": "#/$defs/sentence" }
       }
     },
+    "publisher": {
+      "description": "Workflow publisher role (WF-PUB-01, WF-PUB-02), tier library only: reusable workflows that callers in other repos pin by path under their current names, and the selftest jobs that test this repo's own actions.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflows"],
+      "properties": {
+        "workflows": {
+          "description": "Files in .github/workflows without the leading _ that have a workflow_call trigger and are pinned by path by callers.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*\\.yml$" }
+        },
+        "selftest_jobs": {
+          "description": "Per entry workflow file: job ids that run this repo's actions against a throwaway target on the runner and deploy nothing.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]*\\.yml$" },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+          }
+        }
+      }
+    },
     "exceptions": {
       "description": "Documented deviations. An exception replaces the value of one rule; the rule is still evaluated.",
       "type": "array",

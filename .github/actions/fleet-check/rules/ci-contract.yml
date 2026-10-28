@@ -145,6 +145,9 @@ rules:
         lines: 80
         branches: 70
         fail_under: 80
+      stage_file: ci.yml
+      stage_workflow: _ci-unit.yml
+      stage_default: 80
     value_param: floor
     value_schema:
       type: object
