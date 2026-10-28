@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/VelimirMueller/fleet-standard/blob/develop/schema/fleet.schema.json",
+  "title": "fleet.yml",
+  "description": "Per-repo declaration for the fleet standard: tier, visibility, documented exceptions and the secret inventory. See STANDARD.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tier", "visibility"],
+  "properties": {
+    "tier": {
+      "description": "Repo class from docs/inventory.md. Sets which CI stages run (ci-contract.md, section 4).",
+      "enum": ["deploys", "library", "docs-only"]
+    },
+    "visibility": {
+      "description": "GitHub visibility. The governance variant follows from it: public -> public, private -> private-free. Changing it is the deliberate step that goes with a visibility flip (GOV-ENV-08).",
+      "enum": ["public", "private"]
+    },
+    "visibility_decision": {
+      "description": "Why a private repo stays private or goes public (CI-COST-18).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "reason"],
+      "properties": {
+        "decision": { "enum": ["stay-private", "go-public"] },
+        "reason": { "$ref": "#/$defs/sentence" }
+      }
+    },
+    "exceptions": {
+      "description": "Documented deviations. An exception replaces the value of one rule; the rule is still evaluated.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/exception" }
+    },
+    "secrets": {
+      "description": "Inventory of static secrets (SEC-07). Names and metadata only, never a value.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/secret" }
+    }
+  },
+  "$defs": {
+    "sentence": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "value", "reason"],
+      "properties": {
+        "rule": {
+          "description": "Rule ID, for example CI-COST-12. The rule must exist and allow exceptions.",
+          "type": "string",
+          "pattern": "^[A-Z0-9]+(-[A-Z0-9]+)*-\\d{2}$"
+        },
+        "value": {
+          "description": "The value that replaces the rule's default. Its shape is set per rule (value_schema in rules/*.yml)."
+        },
+        "reason": {
+          "description": "One sentence: why this repo differs.",
+          "$ref": "#/$defs/sentence"
+        },
+        "expires": {
+          "description": "Date the exception ends (at most 12 months ahead). Required for CI-COST-* rules.",
+          "$ref": "#/$defs/date"
+        },
+        "minutes_per_month": {
+          "description": "Estimated Actions minutes per month this exception costs. Required for CI-COST-* rules in private repos.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "scope", "kind", "owner", "expires"],
+      "properties": {
+        "name": {
+          "description": "Secret name (SEC-04): UPPER_SNAKE_CASE, never GITHUB_*.",
+          "type": "string",
+          "pattern": "^(?!GITHUB_)[A-Z][A-Z0-9_]*$"
+        },
+        "scope": {
+          "description": "Where the secret lives: repo (Actions), dependabot, or env:<environment>.",
+          "type": "string",
+          "pattern": "^(repo|dependabot|env:[a-z0-9-]+)$"
+        },
+        "kind": {
+          "description": "Kind from the SEC-02 table.",
+          "enum": ["static-cloud-credential", "promotion-app-key", "hosting-token", "ci-token", "dependabot", "pat"]
+        },
+        "owner": {
+          "description": "Who rotates it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "expires": {
+          "description": "Date the secret must be rotated (at most 365 days ahead).",
+          "$ref": "#/$defs/date"
+        }
+      }
+    }
+  }
+}

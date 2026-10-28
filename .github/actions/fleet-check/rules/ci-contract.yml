@@ -1,0 +1,644 @@
+# Generated from the rule tables in `source` by `fleet rules sync`.
+# `id`, `level`, `exception_allowed`, `default` and `rule` come from the doc; do not edit them here.
+# `check`, `applies`, `params`, `value_param`, `value_schema`, `exception_requires` are kept on sync.
+source: docs/standard/ci-contract.md
+rules:
+  - id: CI-STAGE-01
+    level: MUST
+    exception_allowed: false
+    default: the seven ids
+    rule: Stage job ids are exactly `lint`, `unit`, `e2e`, `build`, `deploy-dev`, `promote-stg`, `promote-prd`. No other names for these stages.
+    check: static
+    params:
+      stages:
+        - lint
+        - unit
+        - e2e
+        - build
+        - deploy-dev
+        - promote-stg
+        - promote-prd
+      aliases:
+        - test
+        - tests
+        - ci
+        - deploy
+  - id: CI-STAGE-02
+    level: MUST
+    exception_allowed: false
+    default: chain as listed
+    rule: Stage order is the `needs:` chain `lint` → `unit` → `e2e` → `build`; `changes` is not a stage but a gate job that every stage needs. `deploy-dev`, `promote-stg`, `promote-prd` run in their own workflows (section 3).
+    check: static
+    params:
+      file: ci.yml
+      chain:
+        - changes
+        - lint
+        - unit
+        - e2e
+        - build
+  - id: CI-STAGE-03
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "A stage that can be skipped by trigger, path or tier uses `if: ${{ !failure() && !cancelled() && <condition> }}`, so a skip never blocks the next stage and a failure always does."
+    check: static
+    params:
+      file: ci.yml
+      stages:
+        - lint
+        - unit
+        - e2e
+        - build
+  - id: CI-STAGE-04
+    level: SHOULD
+    exception_allowed: true
+    default: "caller job = `uses: VelimirMueller/<fleet-workflows>/.github/workflows/<stage>.yml@<tag>`"
+    rule: Every stage job calls the reusable stage workflow from the fleet (#8), pinned to a tag. No copied stage steps.
+    check: static
+    params:
+      file: ci.yml
+      stages:
+        - lint
+        - unit
+        - e2e
+        - build
+      uses_pattern: ^VelimirMueller/[^/]+/\.github/workflows/[^@]+\.yml@\S+$
+    value_param: stages
+    value_schema:
+      type: array
+      items:
+        enum:
+          - lint
+          - unit
+          - e2e
+          - build
+  - id: CI-STAGE-05
+    level: SHOULD
+    exception_allowed: true
+    default: as stated
+    rule: Each stage writes one line to `$GITHUB_STEP_SUMMARY` with the SHA, the env (or `pr`) and the result.
+    check: static
+  - id: CI-LINT-01
+    level: MUST
+    exception_allowed: true
+    default: table above
+    rule: "`lint` runs the formatter in check mode and the linter for every language in the repo. It never writes fixes."
+    check: static
+  - id: CI-LINT-02
+    level: MUST
+    exception_allowed: true
+    default: on
+    rule: "`lint` runs the type check when the language has one (`tsc`, `mypy`)."
+    check: static
+  - id: CI-LINT-03
+    level: MUST
+    exception_allowed: false
+    default: on
+    rule: "`lint` runs `actionlint` and `zizmor` when the PR changes `.github/workflows/**`. Both block."
+    check: static
+  - id: CI-LINT-04
+    level: MUST
+    exception_allowed: false
+    default: on
+    rule: "`lint` runs the Terraform static checks (`_tf-check.yml`) when the PR changes `*.tf`, `*.tfvars` or `.terraform.lock.hcl`."
+    check: static
+  - id: CI-LINT-05
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`lint` needs no credentials: no `environment:`, no cloud login, `permissions: contents: read` only."
+    check: static
+    params:
+      login_actions:
+        - azure/login
+        - aws-actions/configure-aws-credentials
+        - google-github-actions/auth
+  - id: CI-UNIT-01
+    level: MUST
+    exception_allowed: true
+    default: "`vitest run --coverage` / `pytest --cov`"
+    rule: "`unit` runs the full unit test suite with coverage on."
+    check: static
+  - id: CI-UNIT-02
+    level: MUST
+    exception_allowed: false
+    default: "`coverage.thresholds` in `vitest.config.*`, `fail_under` in `pyproject.toml`"
+    rule: The coverage floor is enforced by the test runner config, so a run under the floor fails locally and in CI the same way.
+    check: static
+    applies:
+      tiers:
+        - deploys
+        - library
+  - id: CI-UNIT-03
+    level: MUST
+    exception_allowed: true
+    default: "Vitest (v8 provider): `coverage.thresholds.lines: 80`, `coverage.thresholds.branches: 70`; coverage.py: `[tool.coverage.run] branch = true`, `[tool.coverage.report] fail_under = 80` (combined line+branch)"
+    rule: "Coverage floor: lines ≥ 80 % and branches ≥ 70 % where the runner has separate thresholds (Vitest); one combined floor ≥ 80 % where it has one (coverage.py has no separate branch threshold; with `branch = true` its TOTAL counts statements and branches together). This floor is weaker on branches than the Vitest pair; that is accepted."
+    check: static
+    applies:
+      tiers:
+        - deploys
+        - library
+    params:
+      floor:
+        lines: 80
+        branches: 70
+        fail_under: 80
+    value_param: floor
+    value_schema:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        lines:
+          type: integer
+          minimum: 0
+          maximum: 100
+        branches:
+          type: integer
+          minimum: 0
+          maximum: 100
+        fail_under:
+          type: integer
+          minimum: 0
+          maximum: 100
+  - id: CI-UNIT-04
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: A change never lowers the floor in the runner config without a matching `fleet.yml` exception in the same PR.
+    check: diff
+  - id: CI-UNIT-05
+    level: MUST
+    exception_allowed: true
+    default: as stated
+    rule: "`unit` needs no credentials and no network services beyond a service container."
+    check: static
+    params:
+      login_actions:
+        - azure/login
+        - aws-actions/configure-aws-credentials
+        - google-github-actions/auth
+    value_param: login_actions
+    value_schema:
+      type: array
+      items:
+        type: string
+  - id: CI-E2E-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`e2e` runs only inside the promotion preflight to `stg` (`promote.yml`) and by `workflow_dispatch` of `ci.yml` with input `e2e: true`. Never on a PR (also not on `hotfix/*` PRs), never on a schedule. A tier skip (section 4) is not an exception to this rule. Trigger rule: CI-COST-11."
+    check: static
+    params:
+      dispatch_guard: github.event_name == 'workflow_dispatch'
+  - id: CI-E2E-02
+    level: MUST
+    exception_allowed: true
+    default: Playwright `--project=chromium`
+    rule: "Default scope: the full e2e suite, one browser (Chromium), one runner, no matrix."
+    check: static
+    params:
+      allow_matrix: false
+    value_param: allow_matrix
+    value_schema:
+      const: true
+  - id: CI-E2E-03
+    level: MUST
+    exception_allowed: true
+    default: "`--grep @smoke`, `/version` returns `{ sha, env }`"
+    rule: Post-deploy smoke in `deploy-dev`, `promote-stg`, `promote-prd` runs the tests tagged `@smoke` against the deployed URL, and asserts the version endpoint reports the deployed SHA.
+    check: static
+  - id: CI-E2E-04
+    level: SHOULD
+    exception_allowed: true
+    default: "`if: failure()`, `retention-days: 7`"
+    rule: "`e2e` uploads its report only when it fails, with retention 7 days."
+    check: static
+    params:
+      retention_days: 7
+    value_param: retention_days
+    value_schema:
+      type: integer
+      minimum: 1
+      maximum: 7
+  - id: CI-E2E-05
+    level: MUST
+    exception_allowed: false
+    default: assert the executed test count > 0
+    rule: A run where every `e2e` test was skipped counts as a failure.
+    check: static
+  - id: CI-BUILD-01
+    level: MUST
+    exception_allowed: false
+    default: image tag = full SHA, deploy by digest
+    rule: Build once per SHA. `stg` and `prd` deploy the artifact built for that SHA on `dev`. Never rebuild per environment.
+    check: static
+  - id: CI-BUILD-02
+    level: MUST
+    exception_allowed: false
+    default: "`push: false`"
+    rule: On a PR, `build` verifies the artifact builds and publishes nothing.
+    check: static
+  - id: CI-BUILD-03
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`build` publishes only in `deploy-dev`, from `develop`, with the SHA as the tag. No `latest` tag."
+    check: static
+  - id: CI-BUILD-04
+    level: MUST
+    exception_allowed: true
+    default: as stated
+    rule: A `library` builds the package and runs a pack dry run (`pnpm pack`, `python -m build`). Publishing a package is not a CI stage; it runs only by `workflow_dispatch` in `release.yml` (CI-COST-01).
+    check: static
+    applies:
+      tiers:
+        - library
+  - id: CI-DEPLOY-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`deploy-dev` runs only on the ref `refs/heads/develop`. Its trigger is `workflow_dispatch` only (CI-COST-01): a push or merge to `develop` deploys nothing."
+    check: static
+    applies:
+      tiers:
+        - deploys
+    params:
+      file: deploy.yml
+      triggers:
+        - workflow_dispatch
+  - id: CI-DEPLOY-02
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`deploy-dev` deploys only a SHA whose PR checks passed (`conclusion` = success on the PR head with the same tree)."
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-PROMOTE-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`promote-stg` and `promote-prd` run through `promote.yml` (inputs `target: stg | prd | stg-hotfix`; trigger CI-COST-19), as `set-up-terraform-pipeline` defines. The deploy and smoke test happen in the same run: no deploy starts from the push to `stage` or `main`."
+    check: static
+    applies:
+      tiers:
+        - deploys
+    params:
+      file: promote.yml
+      targets:
+        - stg
+        - prd
+        - stg-hotfix
+  - id: CI-PROMOTE-02
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "Preflight checks before any approval: fast-forward possible (or `main` already holds the SHA, a merged hotfix, target `prd`), `main ⊆ stage ⊆ develop`, previous env deployed this SHA green, no deploy in flight for the target env."
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-PROMOTE-03
+    level: MUST
+    exception_allowed: true
+    default: as stated
+    rule: "`promote-stg` runs `e2e` against the SHA in preflight. A red `e2e` stops the promotion before the approval is asked."
+    check: static
+    applies:
+      tiers:
+        - deploys
+    params:
+      file: promote.yml
+      require_e2e: true
+      push_job: promote-stg
+    value_param: require_e2e
+    value_schema:
+      const: false
+  - id: CI-PROMOTE-04
+    level: MUST
+    exception_allowed: false
+    default: '`git push origin "$SHA:refs/heads/<target>"`'
+    rule: The fast-forward push uses the promotion App token, never `GITHUB_TOKEN`, and pushes the SHA resolved once in preflight.
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-PROMOTE-05
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: No deploy starts from a push to `stage` or `main`. A hotfix merged into `main` (the human path, GOV-RS-04) deploys only by `promote.yml` with target `prd`, which skips the fast-forward and asks the `promote-prd` gate.
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-PROMOTE-06
+    level: MUST
+    exception_allowed: true
+    default: three environments
+    rule: A repo with two environments drops `stg` and `promote-stg`; `promote-prd` then fast-forwards `main` from `develop`.
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-TRIG-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: Stages 1 to 4 live in `ci.yml`. Its events are listed in CI-COST-19.
+    check: static
+    params:
+      file: ci.yml
+      triggers:
+        - pull_request
+        - workflow_dispatch
+      pr_branches:
+        - develop
+        - main
+  - id: CI-TRIG-02
+    rule: Moved to CI-COST-10.
+    moved_to: CI-COST-10
+  - id: CI-TRIG-03
+    rule: Moved to CI-COST-10.
+    moved_to: CI-COST-10
+  - id: CI-TRIG-04
+    rule: Moved to CI-COST-03.
+    moved_to: CI-COST-03
+  - id: CI-TRIG-05
+    rule: Moved to CI-COST-12.
+    moved_to: CI-COST-12
+  - id: CI-TIER-01
+    level: MUST
+    exception_allowed: true
+    default: table above
+    rule: A repo runs every stage its tier marks "required" in the table above.
+    check: static
+    params:
+      required:
+        deploys:
+          - lint
+          - unit
+          - e2e
+          - build
+          - deploy-dev
+          - promote-stg
+          - promote-prd
+        library:
+          - lint
+          - unit
+          - build
+        docs-only:
+          - lint
+      skip_stages: []
+    value_param: skip_stages
+    value_schema:
+      type: array
+      minItems: 1
+      items:
+        enum:
+          - lint
+          - unit
+          - e2e
+          - build
+          - deploy-dev
+          - promote-stg
+          - promote-prd
+  - id: CI-TIER-02
+    level: MUST
+    exception_allowed: true
+    default: table above
+    rule: 'A repo never runs a stage its tier marks "skip" (cost, #16).'
+    check: static
+    params:
+      skipped:
+        deploys: []
+        library:
+          - e2e
+          - deploy-dev
+          - promote-stg
+          - promote-prd
+        docs-only:
+          - unit
+          - e2e
+          - build
+          - deploy-dev
+          - promote-stg
+          - promote-prd
+      extra_stages: []
+      ci_file: ci.yml
+      ci_stages:
+        - lint
+        - unit
+        - e2e
+        - build
+    value_param: extra_stages
+    value_schema:
+      type: array
+      minItems: 1
+      items:
+        enum:
+          - lint
+          - unit
+          - e2e
+          - build
+          - deploy-dev
+          - promote-stg
+          - promote-prd
+  - id: CI-TIER-03
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: A tier change happens only in `fleet.yml` by PR.
+    check: static
+  - id: CI-ENV-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "Every deploy and promote workflow that can target more than one env resolves the env once, in a `setup` job, from `github.ref` (not `github.ref_name`): `refs/heads/develop` → `dev`, `refs/heads/stage` → `stg`, `refs/heads/main` → `prd`. `promote.yml` resolves it from `inputs.target`. Every later job reads `needs.setup.outputs.env`."
+    check: static
+    applies:
+      tiers:
+        - deploys
+    params:
+      files:
+        - infra.yml
+        - deploy.yml
+        - promote.yml
+  - id: CI-ENV-02
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: A dispatch input that names an env must match the ref-derived env, or `setup` fails. A dispatch of `infra.yml` or `deploy.yml` to `prd` from any ref but `main` fails. `promote.yml` runs only on `refs/heads/develop`, where the promotion workflow lives.
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-ENV-03
+    level: MUST
+    exception_allowed: false
+    default: "`<workflow> · <env> · ${{ github.sha }}`"
+    rule: "`run-name` shows the workflow, the env and the SHA. `run-name` cannot read job outputs, so it repeats the CI-ENV-01 map inline on `github.ref` (and on the `target` input for `promote.yml`)."
+    check: static
+    applies:
+      tiers:
+        - deploys
+    params:
+      files:
+        - infra.yml
+        - deploy.yml
+        - promote.yml
+  - id: CI-ENV-04
+    rule: Moved to CI-COST-06.
+    moved_to: CI-COST-06
+  - id: CI-ENV-05
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`public` variant: deploy jobs bind the GitHub environment `dev`, `stg` or `prd`. The environment holds the credentials and the deployment branch policy (#3). In `private-free` no environments exist; GOV-PRV-01 applies instead."
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-ENV-06
+    level: MUST
+    exception_allowed: true
+    default: "`/version`"
+    rule: The deployed service reports `{ sha, env }` on its version endpoint. The smoke test compares both.
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-ENV-07
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "Artifact names hold the env and the full SHA: `<kind>-<env>-<sha>` (e.g. `tfplan-prd-<sha>`)."
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: The gate environments are exactly `promote-stg`, `promote-prd`, `tf-apply-prd`.
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-02
+    level: MUST
+    exception_allowed: false
+    default: "`VelimirMueller`"
+    rule: Each gate has at least one required reviewer. An empty reviewer list fails the check.
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-03
+    level: MUST
+    exception_allowed: true
+    default: "`prevent_self_review: false`"
+    rule: Gates allow self-review, because the fleet has one maintainer. GitHub lets the user who started a run approve its deployment review only while `prevent_self_review` is false, so `true` would deadlock every gate. The gate is a pause to read the plan, not a second reviewer.
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-04
+    level: MUST
+    exception_allowed: false
+    default: "`can_admins_bypass: false`"
+    rule: Admins cannot bypass a gate.
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-05
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: A gate job holds no credentials and does no work besides waiting. Credentials stay on `dev`/`stg`/`prd`, which have no reviewers, so one deploy asks for one approval.
+    check: api
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-06
+    level: MUST
+    exception_allowed: false
+    default: "`if: needs.plan.outputs.exitcode != '0'`"
+    rule: "`tf-apply-prd` runs only when the prd plan has changes, and fails closed when the plan exit code is missing. The `plan` job outputs `exitcode`: `0` no changes, `2` changes."
+    check: static
+    applies:
+      tiers:
+        - deploys
+    params:
+      environment: tf-apply-prd
+      if_pattern: needs\.plan\.outputs\.exitcode != '0'
+  - id: CI-GATE-07
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`dev` deploys and `dev`/`stg` Terraform applies have no approval gate; the dispatch (`deploy-dev`) or the `promote-stg` approval is the human step."
+    check: static
+    applies:
+      tiers:
+        - deploys
+  - id: CI-GATE-08
+    rule: Moved to CI-COST-12.
+    moved_to: CI-COST-12
+  - id: CI-CHECK-01
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: The check contexts are exactly the names in the table above.
+    check: static
+  - id: CI-CHECK-02
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`conclusion` is a plain job in `ci.yml`, not a reusable-workflow call, so its context is `conclusion` and not `<caller> / <job>`. Same for `tf-conclusion`, `branch-policy` and `fleet-check`."
+    check: static
+    params:
+      contexts:
+        - conclusion
+        - tf-conclusion
+        - branch-policy
+        - fleet-check
+  - id: CI-CHECK-03
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "An aggregate job (`conclusion` in `ci.yml`, `tf-conclusion` in `infra.yml`) is the last job of its workflow, runs with `if: always()`, needs every other job of that workflow, and fails when any needed job is `failure` or `cancelled`."
+    check: static
+    params:
+      aggregates:
+        ci.yml: conclusion
+        infra.yml: tf-conclusion
+  - id: CI-CHECK-04
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: "`conclusion` also fails when a stage the tier requires was `skipped` while `changes` said code changed. A skipped run is not a green run."
+    check: static
+  - id: CI-CHECK-05
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: Each required context name (table above) is used by exactly one job in the repo. No second job named `conclusion`. Other job ids may repeat across workflows (`build` in `ci.yml` and `deploy.yml`, `e2e` in `ci.yml` and `promote.yml`).
+    check: static
+    params:
+      contexts:
+        - conclusion
+        - tf-conclusion
+        - branch-policy
+        - fleet-check
+  - id: CI-CHECK-06
+    level: MUST
+    exception_allowed: false
+    default: as stated
+    rule: The ruleset on `develop` requires `conclusion` and `fleet-check`, with `strict` up-to-date on. The ruleset on `main` requires `conclusion` and `branch-policy`, the one on `stage` requires `branch-policy`. A context for a workflow the repo does not have (`fleet-check` before the repo adds `fleet-check.yml`; `has_fleet_check` in the control repo) is left out. `public` variant only.
+    check: api

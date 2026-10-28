@@ -1,0 +1,308 @@
+# Generated from the rule tables in `source` by `fleet rules sync`.
+# `id`, `level`, `exception_allowed`, `default` and `rule` come from the doc; do not edit them here.
+# `check`, `applies`, `params`, `value_param`, `value_schema`, `exception_requires` are kept on sync.
+source: docs/standard/terraform.md
+rules:
+  - id: TF-LAYOUT-01
+    level: MUST
+    exception_allowed: true
+    default: "`terraform/`"
+    rule: All Terraform code lives under one directory at the repo root.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+    value_param: root_dir
+    value_schema:
+      type: string
+      pattern: ^[a-z0-9][a-z0-9_/-]*$
+  - id: TF-LAYOUT-02
+    level: MUST
+    exception_allowed: true
+    default: "`terraform/` is the root"
+    rule: One root module per repo. Per-environment values go in `envs/<env>.tfvars`, per-environment backend config in `envs/<env>.backend.hcl`.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      envs:
+        - dev
+        - stg
+        - prd
+      layout: single-root
+      per_env_dir: environments
+    value_param: layout
+    value_schema:
+      enum:
+        - per-env-roots
+  - id: TF-LAYOUT-03
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Do not use CLI workspaces.
+    check: static
+    applies:
+      when: terraform
+  - id: TF-LAYOUT-04
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Local modules live in `terraform/modules/<name>/`. Each module has `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      module_files:
+        - main.tf
+        - variables.tf
+        - outputs.tf
+        - versions.tf
+  - id: TF-LAYOUT-05
+    level: SHOULD
+    exception_allowed: true
+    default: none
+    rule: Tests live in `terraform/tests/*.tftest.hcl` (root) and `terraform/modules/<name>/tests/*.tftest.hcl`.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      allowed_dirs: []
+    value_param: allowed_dirs
+    value_schema:
+      type: array
+      items:
+        type: string
+        minLength: 1
+      minItems: 1
+  - id: TF-LAYOUT-06
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Tool and lint files sit at fixed paths: `terraform/.terraform-version` (or `.opentofu-version`), `terraform/.terraform.lock.hcl`, `.tflint.hcl` at the repo root."
+    check: static
+    applies:
+      when: terraform
+    params:
+      version_files:
+        - terraform/.terraform-version
+        - terraform/.opentofu-version
+      required_files:
+        - terraform/.terraform.lock.hcl
+        - .tflint.hcl
+  - id: TF-FILE-01
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "The root module uses this fixed file set: `versions.tf`, `backend.tf`, `providers.tf`, `variables.tf`, `locals.tf`, `main.tf`, `outputs.tf`. Add `moved.tf` only when `moved`, `import` or `removed` blocks exist."
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      files:
+        - versions.tf
+        - backend.tf
+        - providers.tf
+        - variables.tf
+        - locals.tf
+        - main.tf
+        - outputs.tf
+  - id: TF-FILE-02
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Each block type has one home file: `terraform {}` with `required_*` in `versions.tf`; `terraform { backend }` in `backend.tf`; `provider` in `providers.tf`; `variable` in `variables.tf`; `locals` in `locals.tf`; `output` in `outputs.tf`; `moved`, `import`, `removed` in `moved.tf`."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-FILE-03
+    level: SHOULD
+    exception_allowed: true
+    default: "`main.tf`"
+    rule: "`resource`, `data` and `module` blocks go in `main.tf` or in a topic file `<topic>.tf` (for example `network.tf`, `database.tf`)."
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      pattern: ^[a-z][a-z0-9_]*\.tf$
+      home_files:
+        - versions.tf
+        - backend.tf
+        - providers.tf
+        - variables.tf
+        - locals.tf
+        - main.tf
+        - outputs.tf
+        - moved.tf
+    value_param: pattern
+    value_schema:
+      type: string
+      minLength: 1
+  - id: TF-FILE-04
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: No auto-loaded variable files in the root.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+  - id: TF-FILE-05
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: File names are lowercase snake_case.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      file_pattern: ^[a-z0-9_.-]+$
+      tf_pattern: ^[a-z][a-z0-9_]*\.tf$
+  - id: TF-ORDER-01
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Block order in a file: `terraform`, `provider`, `variable`, `locals`, `data`, `module`, `resource`, `moved`, `import`, `removed`, `check`, `output`."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-ORDER-02
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Argument order in `resource` and `data`: `count` or `for_each`, `provider`, plain arguments, nested blocks, `tags` (or `labels`), `depends_on`, `lifecycle`. A blank line separates the meta-argument groups."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-ORDER-03
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Argument order in `module`: `source`, `version`, `count` or `for_each`, `providers`, plain arguments, `depends_on`."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-ORDER-04
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Argument order in `variable`: `type`, `description`, `default`, `nullable`, `sensitive`, `ephemeral`, `validation`."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-ORDER-05
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Argument order in `output`: `description`, `value`, `sensitive`, `ephemeral`, `depends_on`."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-ORDER-06
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "In `versions.tf`: `required_version` first, then `required_providers`. Providers are sorted by name; each has `source`, then `version`."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-ORDER-07
+    level: SHOULD
+    exception_allowed: true
+    default: as listed
+    rule: "`variable` blocks are sorted: required ones (no `default`) first, then optional ones; each group alphabetical. `output` blocks are alphabetical."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-NAME-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "Every identifier is lowercase snake_case: resource and data names, module names, variables, outputs, locals."
+    check: static
+    applies:
+      when: terraform
+  - id: TF-NAME-02
+    level: SHOULD
+    exception_allowed: true
+    default: "`main`"
+    rule: A resource name does not repeat its type. Use `main` when a module has one resource of that type.
+    check: static
+    applies:
+      when: terraform
+  - id: TF-NAME-03
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Every root declares `variable "app"` and `variable "environment"`. `environment` validates `contains(["dev", "stg", "prd"], var.environment)`.
+    check: static
+    applies:
+      when: terraform
+  - id: TF-NAME-04
+    level: MUST
+    exception_allowed: true
+    default: "`local.name`"
+    rule: Cloud resource names derive from one local, `name = "${var.app}-${var.environment}"`. No literal `dev`, `stg` or `prd` in a `name` argument.
+    check: static
+    applies:
+      when: terraform
+  - id: TF-NAME-05
+    level: SHOULD
+    exception_allowed: true
+    default: none
+    rule: Booleans start with `enable_` or `is_`. Quantities end with their unit (`_gb`, `_days`, `_mb`, `_seconds`).
+    check: static
+    applies:
+      when: terraform
+  - id: TF-TAG-01
+    level: MUST
+    exception_allowed: true
+    default: '`managed_by = "terraform"` (or `"opentofu"`)'
+    rule: "Every taggable resource carries the tags `project`, `environment`, `managed_by` and `repo`. Set them once: `default_tags` on the AWS provider, or `local.tags` merged into each resource elsewhere."
+    check: plan
+    applies:
+      when: terraform
+  - id: TF-TAG-02
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Tag keys are lowercase snake_case. Tag values for `environment` are `dev`, `stg` or `prd`.
+    check: plan
+    applies:
+      when: terraform
+  - id: TF-VER-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: One exact tool version. `.terraform-version` holds it, and `required_version = "= <same>"` repeats it.
+    check: static
+    applies:
+      when: terraform
+    params:
+      root_dir: terraform
+      version_files:
+        - terraform/.terraform-version
+        - terraform/.opentofu-version
+  - id: TF-VER-02
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Every provider has a full `source` (`<namespace>/<name>`) and a `~> X.Y` constraint. The lock file covers `linux_amd64`, `linux_arm64`, `darwin_arm64`.
+    check: static
+    applies:
+      when: terraform
+  - id: TF-FMT-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "`terraform fmt -check -recursive` is clean."
+    check: static
+    applies:
+      when: terraform
