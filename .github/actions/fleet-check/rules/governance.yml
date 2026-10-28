@@ -1,0 +1,379 @@
+# Generated from the rule tables in `source` by `fleet rules sync`.
+# `id`, `level`, `exception_allowed`, `default` and `rule` come from the doc; do not edit them here.
+# `check`, `applies`, `params`, `value_param`, `value_schema`, `exception_requires` are kept on sync.
+source: docs/standard/governance.md
+rules:
+  - id: GOV-RS-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "Branch rules are rulesets, not classic branch protection. One ruleset per branch, named `<branch>`, `enforcement: active`. Resource: `github_repository_ruleset`."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-02
+    level: MUST
+    exception_allowed: true
+    default: approvals `0`
+    rule: "`develop`: pull request required; approvals `0`; dismiss stale reviews; conversation resolution required; merge methods `squash` and `merge`."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-03
+    level: MUST
+    exception_allowed: true
+    default: "`conclusion`, `fleet-check`"
+    rule: "`develop`: required status checks, `strict` (branch must be up to date), with exactly the contexts that CI-CHECK-06 lists for `develop`."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-04
+    level: MUST
+    exception_allowed: true
+    default: as listed
+    rule: "`stage` and `main`: pull request required; merge method `merge` only; required status checks as CI-CHECK-06 lists them (`branch-policy` on both, `conclusion` on `main`). This leaves one human path into `main`: a reviewed `hotfix/*` PR."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-05
+    level: MUST
+    exception_allowed: false
+    default: both on
+    rule: Every protected branch blocks force push (`non_fast_forward`) and deletion (`deletion`).
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-06
+    level: MUST
+    exception_allowed: false
+    default: off
+    rule: Linear history (`required_linear_history`) is **off** on every branch. The hotfix PR into `main` is a merge commit, and fast-forward promotion carries the back-merge commit from `develop` into `stage`/`main`; the rule rejects both. GOV-RS-05 already keeps history from being rewritten.
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-07
+    level: MUST
+    exception_allowed: true
+    default: as listed
+    rule: "Bypass list on `stage` and `main`: only the promotion GitHub App (`actor_type: Integration`, `bypass_mode: always`). On `develop`: empty. No human bypass. Break-glass is the owner editing the ruleset, which the drift job (#13) reports."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-08
+    level: MUST
+    exception_allowed: false
+    default: off
+    rule: Do not use `update` ("restrict updates") or `creation` rules on `stage`/`main`. They block the hotfix merge.
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-09
+    level: MUST
+    exception_allowed: true
+    default: pattern `refs/tags/v*`
+    rule: "Release tags `v*` are protected by a tag ruleset `tags`: blocks `deletion`, `update` and `non_fast_forward`."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-RS-10
+    level: SHOULD
+    exception_allowed: true
+    default: on for tier `library`
+    rule: "Repos that publish releases turn on immutable releases. Before any history rewrite, check `releases[].immutable`: an immutable release locks its tag forever. No provider resource yet; set with `PUT /repos/{r}/immutable-releases`."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-REPO-01
+    level: MUST
+    exception_allowed: true
+    default: as listed
+    rule: "Merge settings match the rulesets: squash and merge commits allowed, rebase merge off, delete head branch on merge, default branch `develop` when the branch set has it. Resource: `github_repository`."
+    check: api
+  - id: GOV-REPO-02
+    level: MUST
+    exception_allowed: true
+    default: "`0`"
+    rule: No outside collaborators with write access. The `private-free` variant relies on this (GOV-PRV-03).
+    check: api
+  - id: GOV-ENV-01
+    level: MUST
+    exception_allowed: true
+    default: as listed
+    rule: "Deploy environments `dev`, `stg`, `prd` exist. They hold deploy credentials and have no reviewers. Resource: `github_repository_environment`."
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-02
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Each deploy environment has a custom deployment branch policy: `dev` → `develop`, `stg` → `stage`, `prd` → `main`. Resource: `github_repository_environment_deployment_policy`."
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-03
+    level: MUST
+    exception_allowed: true
+    default: as listed
+    rule: Plan environments `dev-plan`, `stg-plan`, `prd-plan` exist with read-only identities, no reviewers and no branch policy. `tf-drift.yml` plans every env from one ref, so a branch policy would block it.
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-04
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: Gate environments `promote-stg`, `promote-prd`, `tf-apply-prd` exist. Each has `required_reviewers = [VelimirMueller]`. An empty reviewer list never waits.
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-05
+    level: MUST
+    exception_allowed: true
+    default: "`false`"
+    rule: "Gates set `prevent_self_review: false` while the repo has one maintainer. Set it to `true` when a second reviewer is added."
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-06
+    level: MUST
+    exception_allowed: true
+    default: "`false`"
+    rule: "Gates set `can_admins_bypass: false`. Admins approve like any reviewer; they do not skip the gate."
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-07
+    level: SHOULD
+    exception_allowed: true
+    default: "`0`"
+    rule: No wait timers. A timer only delays a solo approval.
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - deploys
+  - id: GOV-ENV-08
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: The variant follows visibility. A repo going public → private loses all environment rules and secrets without an error. Before a visibility change, move the repo to `private-free` secrets (SEC-04) first.
+    check: api
+  - id: GOV-ENV-09
+    rule: Moved to CI-COST-12.
+    moved_to: CI-COST-12
+  - id: GOV-ENV-10
+    level: SHOULD
+    exception_allowed: true
+    default: as listed
+    rule: "Tier `library`: one environment `release` with branch policy `main` and tag policy `v*`, no reviewers. It holds the publish identity (SEC-02)."
+    check: api
+    applies:
+      variants:
+        - public
+      tiers:
+        - library
+  - id: GOV-ENV-11
+    level: SHOULD
+    exception_allowed: true
+    default: none
+    rule: No other environments, except the ones a hosting integration creates (`github-pages`, `Preview`, `Production` from Vercel).
+    check: api
+    applies:
+      variants:
+        - public
+  - id: GOV-PRV-01
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Deploy jobs do not use `environment:`: private repos have none. Each deploy job guards its branch: `if: github.ref == 'refs/heads/<branch>'` (`develop` → dev, `stage` → stg, `main` → prd), joined with the event guard of CI-COST-02. The trigger rule is CI-COST-01."
+    check: static
+    applies:
+      variants:
+        - private-free
+    params:
+      ref_guard_pattern: github\.ref == 'refs/heads/(develop|stage|main)'
+  - id: GOV-PRV-02
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Every gate (`promote-stg`, `promote-prd`, `tf-apply-prd`) is a separate `workflow_dispatch` run. The dispatch is the approval. The job guards the dispatch ref (CI-ENV-02: `promote.yml` on `refs/heads/develop`, `tf-apply-prd.yml` on `refs/heads/main`) and the actor: `github.triggering_actor == github.repository_owner`. `tf-apply-prd.yml` takes the plan run id as input and applies only that saved plan."
+    check: static
+    applies:
+      variants:
+        - private-free
+  - id: GOV-PRV-03
+    level: MUST
+    exception_allowed: false
+    default: "`0` collaborators"
+    rule: Write access stays with the owner only (GOV-REPO-02). The guards in GOV-PRV-01/02 hold only while nobody else can push or dispatch.
+    check: api
+    applies:
+      variants:
+        - private-free
+  - id: GOV-PRV-04
+    level: MUST
+    exception_allowed: false
+    default: weekly
+    rule: "Branch rules are detected, not enforced: the fleet drift job (#13) runs the promotion invariant (`main ⊆ stage ⊆ develop`) and flags any branch head that moved non-fast-forward since the last run. It runs once, in the control repo, as the CI-COST-12 scheduled job."
+    check: api
+    applies:
+      variants:
+        - private-free
+  - id: GOV-PRV-05
+    level: SHOULD
+    exception_allowed: true
+    default: on
+    rule: A local `pre-push` hook rejects force pushes and deletes of `develop`, `stage`, `main`.
+    check: static
+    applies:
+      variants:
+        - private-free
+    params:
+      hook: .githooks/pre-push
+    value_param: hook
+    value_schema:
+      type: string
+      minLength: 1
+  - id: GOV-LBL-01
+    level: MUST
+    exception_allowed: false
+    default: see table below
+    rule: "Every repo has the seven base labels with these exact colours. Resource: `github_issue_label` (one per label, not the authoritative `github_issue_labels`, so extra labels survive)."
+    check: api
+  - id: GOV-LBL-02
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Each issue carries exactly one origin label (`ai_issue` or `issue`) and exactly one type label (`feat`, `fix`, `chore`, `infra`, `improvement`), and an assignee.
+    check: api
+  - id: GOV-LBL-03
+    level: SHOULD
+    exception_allowed: true
+    default: none
+    rule: Extra labels are allowed. Dependabot's `dependencies` and ecosystem labels are expected.
+    check: manual
+  - id: SEC-01
+    level: MUST
+    exception_allowed: true
+    default: OIDC
+    rule: OIDC before static keys. Cloud access (Azure, AWS, GCP) and package publishing (npm, PyPI trusted publishing) use OIDC. A static credential needs an exception that names why OIDC is not possible.
+    check: api
+  - id: SEC-02
+    level: MUST
+    exception_allowed: true
+    default: see table
+    rule: Each kind of secret lives in one place (table below).
+    check: api
+  - id: SEC-03
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "OIDC trust is bound to the exact subject read from `GET /repos/{r}/actions/oidc/customization/sub`. `public`: `<prefix>:environment:<env>`. `private-free`: `<prefix>:ref:refs/heads/<branch>` (no environment claim exists). `<prefix>` is the full `sub_claim_prefix` the API returns, including the id form `repo:VelimirMueller@56129997/<repo>@<repo-id>`; build the trust policy from it, never from `repo:<owner>/<repo>`. In `private-free`, the prd plan and the prd apply both run on `main` (both by dispatch, after `promote.yml` moved `main`), so both identities trust `ref:refs/heads/main`; the read-only plan identity cannot change anything. Never a wildcard subject."
+    check: api
+  - id: SEC-04
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Names: `UPPER_SNAKE_CASE`, `<SYSTEM>_<PURPOSE>` (`VERCEL_TOKEN`, `PROMOTE_APP_PRIVATE_KEY`). No environment suffix inside an environment. In repo scope (`private-free`), add `_DEV`, `_STG` or `_PRD`. The prefix `GITHUB_` is reserved by GitHub."
+    check: api
+  - id: SEC-05
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "Identifiers are variables, not secrets: client ids, tenant ids, subscription ids, role ARNs, App ids. Resource: `github_actions_environment_variable` / `github_actions_variable`."
+    check: api
+  - id: SEC-06
+    level: MUST
+    exception_allowed: false
+    default: "`encrypted_value`"
+    rule: "Terraform never holds a secret value in plain text. Use `encrypted_value` (sealed with the repo public key) or create the secret out of band and manage only its name. Never `plaintext_value`. Resources: `github_actions_secret`, `github_actions_environment_secret`, `github_dependabot_secret`."
+    check: static
+  - id: SEC-07
+    level: MUST
+    exception_allowed: true
+    default: 365 days
+    rule: "Every static secret has an inventory entry in `fleet.yml` `secrets: [{name, scope, kind, owner, expires}]` — never the value. Maximum lifetime 365 days. Rotate right away on suspected exposure. The password store that holds the values is the parameter `secret_store` ([open parameters](#open-parameters))."
+    check: static
+    params:
+      max_lifetime_days: 365
+      warn_days: 30
+    value_param: max_lifetime_days
+    value_schema:
+      type: integer
+      minimum: 1
+      maximum: 730
+  - id: SEC-08
+    level: MUST
+    exception_allowed: true
+    default: App token
+    rule: "No personal access tokens in workflows. Use a GitHub App installation token (promotion, cross-repo writes) or `GITHUB_TOKEN`. If a PAT is unavoidable: fine-grained, one repo, an expiry date, and an exception."
+    check: api
+  - id: SEC-09
+    level: MUST
+    exception_allowed: false
+    default: "`read`"
+    rule: "`GITHUB_TOKEN` defaults to read-only, and Actions cannot approve pull requests. Each workflow declares `permissions:`. Resource: `github_workflow_repository_permissions`."
+    check: api
+  - id: SEC-10
+    level: MUST
+    exception_allowed: true
+    default: none
+    rule: "A Dependabot-started run reads only the Dependabot store. That store holds only the credentials Dependabot needs to read private registries (`kind: registry` in the `fleet.yml` inventory). Jobs that read any other secret skip on bot runs (CI-COST-03)."
+    check: api
+  - id: SEC-11
+    level: MUST
+    exception_allowed: false
+    default: on
+    rule: "`public`: secret scanning and push protection are on. Resource: `github_repository.security_and_analysis`."
+    check: api
+    applies:
+      variants:
+        - public
+  - id: SEC-12
+    rule: Moved to CI-COST-19.
+    moved_to: CI-COST-19
+  - id: SEC-13
+    level: MUST
+    exception_allowed: true
+    default: cloud store
+    rule: Runtime app secrets (database passwords, third-party API keys the app reads) never live in GitHub. They live in the cloud secret store (Key Vault, Secrets Manager, Vercel env). Terraform creates them as resources with `ignore_changes = [value]`, never reads them with a data source.
+    check: static
+    params:
+      data_sources:
+        - azurerm_key_vault_secret
+        - aws_secretsmanager_secret_version
+    value_param: data_sources
+    value_schema:
+      type: array
+      items:
+        type: string

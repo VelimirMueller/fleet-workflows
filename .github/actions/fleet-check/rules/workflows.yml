@@ -1,0 +1,311 @@
+# Generated from the rule tables in `source` by `fleet rules sync`.
+# `id`, `level`, `exception_allowed`, `default` and `rule` come from the doc; do not edit them here.
+# `check`, `applies`, `params`, `value_param`, `value_schema`, `exception_requires` are kept on sync.
+source: docs/standard/workflows.md
+rules:
+  - id: WF-FILE-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Workflow files use the `.yml` extension and lowercase kebab-case names.
+    check: static
+    params:
+      pattern: ^_?[a-z][a-z0-9-]*\.yml$
+  - id: WF-FILE-02
+    level: MUST
+    exception_allowed: true
+    default: the table
+    rule: Entry workflows use only the file names in the taxonomy table.
+    check: static
+    params:
+      entry_files:
+        - ci.yml
+        - infra.yml
+        - deploy.yml
+        - promote.yml
+        - release.yml
+        - tf-apply-prd.yml
+        - tf-drift.yml
+        - branch-policy.yml
+        - branch-sync.yml
+        - fleet-check.yml
+      extra_entry_files: []
+    value_param: extra_entry_files
+    value_schema:
+      type: array
+      items:
+        type: string
+        pattern: ^_?[a-z][a-z0-9-]*\.ya?ml$
+      minItems: 1
+  - id: WF-FILE-03
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "A file starting with `_` is reusable: its only trigger is `workflow_call`, and its name is `_<stage>-<step>.yml`. An entry file has no `workflow_call` trigger."
+    check: static
+    params:
+      reusable_pattern: ^_[a-z0-9]+-[a-z0-9-]+\.yml$
+  - id: WF-FILE-04
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Local composite actions live in `.github/actions/<name>/action.yml`.
+    check: static
+  - id: WF-NAME-01
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "`name:` equals the file stem without the leading `_`."
+    check: static
+  - id: WF-NAME-02
+    level: MUST
+    exception_allowed: true
+    default: the table
+    rule: Job ids are lowercase kebab-case. A job that does a stage uses the stage id from CI-STAGE-01.
+    check: static
+    params:
+      pattern: ^[a-z][a-z0-9-]*$
+      taxonomy_jobs:
+        ci.yml:
+          - changes
+          - lint
+          - unit
+          - e2e
+          - build
+          - conclusion
+        infra.yml:
+          - setup
+          - plan
+          - gate
+          - apply
+          - smoke
+          - tf-conclusion
+        deploy.yml:
+          - setup
+          - build
+          - deploy-dev
+        promote.yml:
+          - setup
+          - preflight
+          - e2e
+          - gate-stg
+          - gate-prd
+          - promote-stg
+          - promote-prd
+        release.yml:
+          - check
+          - publish
+        tf-apply-prd.yml:
+          - apply
+        tf-drift.yml:
+          - plan-dev
+          - plan-stg
+          - plan-prd
+          - report
+        branch-policy.yml:
+          - branch-policy
+        branch-sync.yml:
+          - sync
+        fleet-check.yml:
+          - fleet-check
+      extra_jobs: {}
+    value_param: extra_jobs
+    value_schema:
+      type: object
+      minProperties: 1
+      additionalProperties:
+        type: array
+        items:
+          type: string
+          minLength: 1
+        minItems: 1
+  - id: WF-NAME-03
+    level: SHOULD
+    exception_allowed: true
+    default: none
+    rule: Jobs do not set `name:`, so the check context is the stable job id.
+    check: static
+    params:
+      allowed_named_jobs: []
+    value_param: allowed_named_jobs
+    value_schema:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        pattern: ^_?[a-z][a-z0-9-]*\.ya?ml(:[a-z0-9_-]+)?$
+  - id: WF-NAME-04
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Every step has a `name:`. It starts with a capital verb in the imperative and has no trailing period.
+    check: static
+    params:
+      pattern: ^[A-Z][a-z]+( [^.]*[^.])?$
+  - id: WF-NAME-05
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: Step ids are lowercase snake_case.
+    check: static
+    params:
+      pattern: ^[a-z][a-z0-9_]*$
+  - id: WF-NAME-06
+    level: MUST
+    exception_allowed: false
+    default: the set
+    rule: "`environment:` names come from one closed set: `dev`, `stg`, `prd`, `dev-plan`, `stg-plan`, `prd-plan`, `promote-stg`, `promote-prd`, `tf-apply-prd`. An expression may only read `needs.setup.outputs.*` or `inputs.*`."
+    check: static
+    params:
+      environments:
+        - dev
+        - stg
+        - prd
+        - dev-plan
+        - stg-plan
+        - prd-plan
+        - promote-stg
+        - promote-prd
+        - tf-apply-prd
+      expression_pattern: ^\$\{\{ (needs\.setup\.outputs|inputs)\.[a-z_-]+ \}\}$
+  - id: WF-NAME-07
+    level: MUST
+    exception_allowed: false
+    default: "`<name>-…`"
+    rule: Every concurrency group starts with the workflow `name` and a hyphen. The rest of the group follows CI-COST-06.
+    check: static
+  - id: WF-ORDER-01
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Top-level key order: `name`, `run-name`, `on`, `permissions`, `defaults`, `concurrency`, `env`, `jobs`."
+    check: static
+    params:
+      order:
+        - name
+        - run-name
+        - on
+        - permissions
+        - defaults
+        - concurrency
+        - env
+        - jobs
+  - id: WF-ORDER-02
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Event order under `on`: `pull_request`, `push`, `workflow_dispatch`, `workflow_call`, `schedule` (only with a CI-COST-12 exception)."
+    check: static
+    params:
+      order:
+        - pull_request
+        - push
+        - workflow_dispatch
+        - workflow_call
+        - schedule
+  - id: WF-ORDER-03
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Job key order: `name`, `needs`, `if`, `strategy`, `runs-on`, `timeout-minutes`, `continue-on-error`, `permissions`, `environment`, `concurrency`, `defaults`, `env`, `outputs`, `container`, `services`, `steps`. A job that calls a reusable workflow: `name`, `needs`, `if`, `strategy`, `permissions`, `uses`, `with`, `secrets`."
+    check: static
+    params:
+      order_runner:
+        - name
+        - needs
+        - if
+        - strategy
+        - runs-on
+        - timeout-minutes
+        - continue-on-error
+        - permissions
+        - environment
+        - concurrency
+        - defaults
+        - env
+        - outputs
+        - container
+        - services
+        - steps
+      order_caller:
+        - name
+        - needs
+        - if
+        - strategy
+        - permissions
+        - uses
+        - with
+        - secrets
+  - id: WF-ORDER-04
+    level: MUST
+    exception_allowed: false
+    default: as listed
+    rule: "Step key order: `name`, `id`, `if`, `uses`, `with`, `env`, `working-directory`, `shell`, `continue-on-error`, `timeout-minutes`, `run`."
+    check: static
+    params:
+      order:
+        - name
+        - id
+        - if
+        - uses
+        - with
+        - env
+        - working-directory
+        - shell
+        - continue-on-error
+        - timeout-minutes
+        - run
+  - id: WF-ORDER-05
+    level: MUST
+    exception_allowed: false
+    default: none
+    rule: "Jobs appear in dependency order: a job comes after every job in its `needs`. The aggregate job (`conclusion` or `tf-conclusion`, CI-CHECK-03) is the last job."
+    check: static
+    params:
+      last_jobs:
+        - conclusion
+        - tf-conclusion
+  - id: WF-ORDER-06
+    level: SHOULD
+    exception_allowed: true
+    default: none
+    rule: Inside `with`, `env`, `outputs` and `inputs`, keep the order of the source the values come from; no rule on sorting.
+    check: manual
+  - id: WF-TOP-01
+    level: MUST
+    exception_allowed: false
+    default: "`{}`"
+    rule: "Every workflow sets `permissions: {}` at the top level. Jobs add only what they need."
+    check: static
+  - id: WF-TOP-02
+    level: MUST
+    exception_allowed: false
+    default: "`bash`"
+    rule: "Every workflow sets `defaults.run.shell: bash` (gives `-eo pipefail`). A reusable workflow may set it on the job instead."
+    check: static
+    params:
+      shell: bash
+  - id: WF-TOP-03
+    rule: Moved to CI-COST-06.
+    moved_to: CI-COST-06
+  - id: WF-JOB-01
+    rule: Moved to CI-COST-07.
+    moved_to: CI-COST-07
+  - id: WF-JOB-02
+    rule: Moved to CI-CHECK-03.
+    moved_to: CI-CHECK-03
+  - id: WF-TRIG-01
+    rule: Moved to CI-COST-12.
+    moved_to: CI-COST-12
+  - id: WF-TRIG-02
+    rule: Moved to CI-COST-19.
+    moved_to: CI-COST-19
+  - id: WF-TRIG-03
+    rule: Moved to CI-COST-19.
+    moved_to: CI-COST-19
+  - id: WF-TRIG-04
+    rule: Moved to CI-COST-10.
+    moved_to: CI-COST-10
+  - id: WF-TRIG-05
+    rule: Moved to CI-COST-01.
+    moved_to: CI-COST-01

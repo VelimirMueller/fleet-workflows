@@ -5,12 +5,11 @@ Reusable GitHub Actions stage workflows for the
 these files instead of copying steps (CI-STAGE-04). The caller templates and the rollout guide
 are in fleet-standard: `templates/<tier>/<variant>/` and `docs/rollout.md`.
 
-- Pin a tag: `uses: VelimirMueller/fleet-workflows/.github/workflows/<file>@v1`.
+- Pin a release tag: `uses: VelimirMueller/fleet-workflows/.github/workflows/<file>@v0.0.3`.
 - This repo is public, so public and private repos can both call it.
 - Every action inside is pinned by SHA. The workflows reach their own composite actions with
   `uses: $/.github/actions/<name>` (GitHub's self-repository syntax), so an action always runs at
   the same tag as the workflow. A `./` path would look in the caller's checkout instead.
-- `v1` is a moving major tag. A breaking input change needs `v2`.
 
 ## Workflows
 
@@ -53,6 +52,27 @@ Stage-specific inputs:
 - `_promote-preflight.yml`: `target` (`stg`, `prd`, `stg-hotfix`), `two-env`, `dev-workflow` (`deploy.yml`), `stg-workflow` (`promote.yml`). Outputs: `sha`, `branch`, `push`.
 - `_tf-plan.yml` / `_tf-apply.yml`: `environment`, `working-directory`, `github-environment`, `env` (non-secret `KEY=value` lines, for example `ARM_USE_OIDC=true`), `aws-role-arn`, `aws-region`, `app-client-id`. Secrets: `TF_ENV`, `APP_PRIVATE_KEY`. The plan outputs `exitcode` (0 or 2), `destroys`, `artifact` and `plan-sha256`. Apply also takes `plan-run-id`, `plan-workflow` (`infra.yml`), `plan-sha256` and `allow-destroy` (false).
 
+## Conformance check action
+
+`.github/actions/fleet-check` runs `fleet check` in a repo's own `fleet-check.yml` (job `fleet-check`,
+the required check on `develop`, CI-CHECK-06). fleet-standard is private, so a public repo cannot
+check it out. This action ships the checker as one bundled file instead.
+
+- `dist/`, `rules/` and `schema/` are generated: `pnpm bundle:action <this repo>/.github/actions/fleet-check`
+  in fleet-standard. The first line of `dist/index.min.js` names the source commit. Do not edit them here.
+- Runtime `node24`: no toolchain install, no shell step.
+- On `pull_request` it diffs the checked merge commit against its base (`git diff HEAD^1 HEAD`; the
+  caller checks out with `fetch-depth: 2`; no API, no token). It passes at once only when every changed
+  file is a document or image outside `.github/`, `.githooks/`, `.gitlab/`, the dirs the rules name and
+  every dir with Terraform. Any other file, or a diff it cannot compute, runs the check (fail closed).
+- The report is printed inside `::stop-commands::`, so repo-controlled names cannot run workflow commands.
+- Exit 0 conforms, 1 drift, 2 config error. Each finding of a failing rule is an `::error` annotation; the report
+  goes to the job summary.
+- Inputs: `strict` (`false`; `true` also fails on SHOULD findings), `path` (`.`). Caller job
+  permissions: `contents: read`.
+- The caller job and its rules (no `paths` filter, no draft guard, `pull_request` into `develop` only)
+  are in fleet-standard `docs/rollout.md`.
+
 ## Saved Terraform plans
 
 A plan can hold secret values, and the artifacts, logs and summaries of a public repo are public.
@@ -65,5 +85,6 @@ A plan can hold secret values, and the artifacts, logs and summaries of a public
 ## Release
 
 1. Merge the PR into `main`. `ci.yml` lints every workflow on the PR.
-2. Tag the merge commit `v1.<minor>.<patch>`, then move `v1` to the same commit.
+2. Tag the merge commit `v0.0.<n>` and create a GitHub release. Bump every caller pin together
+   (fleet-standard `templates/`).
 3. A breaking change to an input, a secret or a permission needs `v2`.

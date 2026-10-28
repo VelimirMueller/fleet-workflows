@@ -1,0 +1,350 @@
+# Generated from the rule tables in `source` by `fleet rules sync`.
+# `id`, `level`, `exception_allowed`, `default` and `rule` come from the doc; do not edit them here.
+# `check`, `applies`, `params`, `value_param`, `value_schema`, `exception_requires` are kept on sync.
+source: docs/standard/budget.md
+rules:
+  - id: CI-COST-01
+    level: MUST
+    exception_allowed: false
+    default: "`on: workflow_dispatch`"
+    rule: A deploy job starts only by hand. A workflow that holds a deploy job ([definition](#deploy-job)) has only `workflow_dispatch` and `workflow_call` triggers, in public and in private repos. A reviewer gate (environment with required reviewers) comes on top of the manual start, never instead of it.
+    check: static
+    params:
+      manual_triggers:
+        - workflow_dispatch
+        - workflow_call
+  - id: CI-COST-02
+    level: MUST
+    exception_allowed: false
+    default: "`if: github.event_name == 'workflow_dispatch'`"
+    rule: "A deploy job also checks the event itself, so a copied trigger can never deploy. Gate jobs (CI-GATE-05) are exempt: they hold no credentials and do no work."
+    check: static
+    params:
+      guards:
+        - github.event_name == 'workflow_dispatch'
+  - id: CI-COST-03
+    level: MUST
+    exception_allowed: false
+    default: "`if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'` on secret-using jobs"
+    rule: Dependency update PRs run the checks of stages 1 to 4 like any PR and nothing else. No deploy, release, publish or schedule starts from a Dependabot or Renovate PR or its merge. Jobs that read secrets skip on bot runs.
+    check: static
+    params:
+      bots:
+        - dependabot[bot]
+        - renovate[bot]
+  - id: CI-COST-04
+    level: MUST
+    exception_allowed: true
+    default: see [Dependabot config](#dependabot-and-renovate)
+    rule: Dependency updates come once a week, grouped, one PR per ecosystem.
+    check: static
+    params:
+      intervals:
+        - weekly
+        - monthly
+      max_open_prs: 5
+      target_branch: develop
+    value_param: intervals
+    value_schema:
+      type: array
+      minItems: 1
+      items:
+        enum:
+          - daily
+          - weekly
+          - monthly
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-05
+    level: MUST
+    exception_allowed: false
+    default: "`on: pull_request` + `workflow_dispatch`"
+    rule: One commit runs a check workflow once. Check workflows use `pull_request`, not `push` and `pull_request` together.
+    check: static
+    params: {}
+  - id: CI-COST-06
+    level: MUST
+    exception_allowed: false
+    default: "others: `group: <name>-${{ github.event.number || github.ref }}`, `cancel-in-progress: true`. Deploy workflows: `group: <name>-${{ inputs.environment }}` (`inputs.target` in `promote.yml`, the literal `deploy-dev` in `deploy.yml`), `cancel-in-progress: false`"
+    rule: Every entry workflow has a top-level `concurrency` group that starts with the workflow `name` and a hyphen (WF-NAME-07). A workflow that holds a deploy job never cancels a running job. Every other workflow cancels the older run. No group uses `github.ref_name`.
+    check: static
+    params: {}
+  - id: CI-COST-07
+    level: MUST
+    exception_allowed: true
+    default: checks 15, deploys 30
+    rule: Every job that has `runs-on` sets `timeout-minutes`, an integer of 30 or less. A job that calls a reusable workflow has no `runs-on`; the called workflow holds the timeout.
+    check: static
+    params:
+      max_timeout: 30
+    value_param: max_timeout
+    value_schema:
+      type: integer
+      minimum: 1
+      maximum: 60
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-08
+    level: MUST
+    exception_allowed: true
+    default: "`runs-on: ubuntu-latest`"
+    rule: Jobs run on standard Linux runners. No macOS, Windows, larger or self-hosted runners.
+    check: static
+    params:
+      runner_pattern: ^ubuntu-(latest|\d{2}\.\d{2})$
+      allowed_runners: []
+    value_param: allowed_runners
+    value_schema:
+      type: array
+      items:
+        type: string
+        minLength: 1
+      minItems: 1
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-09
+    level: MUST
+    exception_allowed: true
+    default: no matrix
+    rule: No `strategy.matrix`, except in a published library. A library matrix has at most 4 entries.
+    check: static
+    params:
+      max_matrix: 0
+    value_param: max_matrix
+    value_schema:
+      type: integer
+      minimum: 1
+      maximum: 4
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-10
+    level: MUST
+    exception_allowed: true
+    default: a `changes` job (`dorny/paths-filter` pinned by SHA, or `git diff --name-only`)
+    rule: "A change runs only the checks it needs. A docs-only change (only `**/*.md`, `docs/**`, `LICENSE`, `.github/ISSUE_TEMPLATE/**`) runs only `changes` and `conclusion` of `ci.yml`. The `changes` job decides, so the required check always reports. A workflow that holds a required check (`ci.yml`, `branch-policy.yml`, `fleet-check.yml`) has no `paths` or `paths-ignore`: a path-filtered workflow that does not start leaves its required check `Pending`. A repo of tier `docs-only` runs `lint` on every PR."
+    check: static
+    params:
+      changes_job: changes
+      changes_file: ci.yml
+      required_check_files:
+        - ci.yml
+        - branch-policy.yml
+        - fleet-check.yml
+      globs:
+        - "**/*.md"
+        - docs/**
+        - LICENSE
+        - .github/ISSUE_TEMPLATE/**
+    value_param: globs
+    value_schema:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-11
+    level: MUST
+    exception_allowed: true
+    default: "`workflow_dispatch` or `workflow_call` from the promote workflow"
+    rule: E2E tests run only on demand or inside a promotion run, never on every PR.
+    check: static
+    params:
+      triggers:
+        - workflow_dispatch
+        - workflow_call
+      dispatch_guard: github.event_name == 'workflow_dispatch'
+    value_param: triggers
+    value_schema:
+      type: array
+      minItems: 1
+      items:
+        enum:
+          - workflow_dispatch
+          - workflow_call
+          - pull_request
+          - push
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-12
+    level: MUST
+    exception_allowed: true
+    default: none
+    rule: "No `schedule:` trigger in any workflow. No scheduled job sets `environment:`: a cron run waits for an approval that nobody gives. A fleet-wide job runs once, in the control repo, not once per repo."
+    check: static
+    params:
+      allowed_files: []
+      max_runs_per_day: 1
+    value_param: allowed_files
+    value_schema:
+      type: array
+      items:
+        type: string
+        pattern: ^_?[a-z][a-z0-9-]*\.ya?ml$
+      minItems: 1
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-13
+    level: MUST
+    exception_allowed: false
+    default: "`retention-days: 7`"
+    rule: Uploaded artifacts expire after 7 days or less.
+    check: static
+    params:
+      max_days: 7
+  - id: CI-COST-14
+    level: SHOULD
+    exception_allowed: true
+    default: "`cache: pnpm` (node), `cache: pip` (python), `cache: true` (go)"
+    rule: Setup actions use their dependency cache.
+    check: static
+    params:
+      setup_actions:
+        - actions/setup-node
+        - actions/setup-python
+        - actions/setup-go
+    value_param: setup_actions
+    value_schema:
+      type: array
+      items:
+        type: string
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-15
+    level: SHOULD
+    exception_allowed: true
+    default: up to 3 stage jobs, plus `changes` and `conclusion`
+    rule: A check workflow has few jobs. GitHub bills each job rounded up to a full minute, so five 20-second jobs cost 5 minutes.
+    check: static
+    params:
+      max_jobs: 3
+      not_counted:
+        - changes
+        - conclusion
+      dispatch_guard: github.event_name == 'workflow_dispatch'
+    value_param: max_jobs
+    value_schema:
+      type: integer
+      minimum: 1
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-16
+    level: SHOULD
+    exception_allowed: true
+    default: "`types: [opened, synchronize, reopened, ready_for_review]` + `if: ${{ !github.event.pull_request.draft }}` on the first job (`changes`); every other job needs it, so they skip too. `conclusion` still runs (1 minute)."
+    rule: Draft PRs run no checks.
+    check: static
+    params:
+      draft_guard: "!github.event.pull_request.draft"
+      exempt_jobs: []
+      skip_files:
+        - branch-policy.yml
+        - fleet-check.yml
+    value_param: exempt_jobs
+    value_schema:
+      type: array
+      items:
+        type: string
+        minLength: 1
+      minItems: 1
+    exception_requires:
+      always:
+        - expires
+      private:
+        - minutes_per_month
+  - id: CI-COST-17
+    level: MUST
+    exception_allowed: false
+    default: 5 USD, stop usage on
+    rule: The account has an Actions budget of 5 USD that stops usage when reached.
+    check: api
+  - id: CI-COST-18
+    level: MUST
+    exception_allowed: false
+    default: to be set by owner per repo (open parameter, not decided here)
+    rule: "Each private repo has a recorded visibility decision: stay private (and pay from the 2,000 minutes), or go public (CI is free)."
+    check: static
+  - id: CI-COST-19
+    level: MUST
+    exception_allowed: false
+    default: the table
+    rule: "Entry workflows use only the events in the table [below](#allowed-events-per-workflow). `push` names only `develop`, `stage`, `main`: no tags, no wildcard branches, no `branches-ignore`. `pull_request` names only the branches in the table. Never `pull_request_target` or `workflow_run`. `schedule` only with a CI-COST-12 exception record. A commit on a feature branch runs once, through `pull_request`."
+    check: static
+    params:
+      banned_events:
+        - pull_request_target
+        - workflow_run
+      events_by_file:
+        ci.yml:
+          - pull_request
+          - workflow_dispatch
+        infra.yml:
+          - workflow_dispatch
+        deploy.yml:
+          - workflow_dispatch
+        promote.yml:
+          - workflow_dispatch
+        release.yml:
+          - workflow_dispatch
+        tf-apply-prd.yml:
+          - workflow_dispatch
+        tf-drift.yml:
+          - workflow_dispatch
+        branch-policy.yml:
+          - pull_request
+        branch-sync.yml:
+          - push
+          - workflow_dispatch
+        fleet-check.yml:
+          - pull_request
+      push_branches:
+        - develop
+        - stage
+        - main
+      pr_branches:
+        - develop
+        - stage
+        - main
+      pr_branches_by_file:
+        ci.yml:
+          - develop
+          - main
+        branch-policy.yml:
+          - stage
+          - main
+        fleet-check.yml:
+          - develop
+      head_ref_pattern: github\.event\.(pull_request|workflow_run)\.head|github\.head_ref|refs/pull/
+      run_patterns:
+        - gh\s+pr\s+checkout
+        - git\s+fetch\b[^\n]*\bpull/
+        - github\.head_ref
+        - github\.event\.(pull_request|workflow_run)\.head
+        - refs/pull/
