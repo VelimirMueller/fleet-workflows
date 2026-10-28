@@ -77,9 +77,10 @@ jobs:
           COMMAND: ${{ inputs.command }}
         run: |
           if [ -n "$COMMAND" ]; then
-            # Pass the exit code on explicitly; a failing command fails the stage.
-            eval "$COMMAND" && exit 0
-            exit $?
+            # Run in a child bash with errexit and pipefail: any failing line fails the stage.
+            # (`eval ... && exit 0` turned errexit off inside the command.)
+            bash -eo pipefail -c "$COMMAND"
+            exit 0
           fi
           bin() { if [ -x "node_modules/.bin/$1" ]; then echo "node_modules/.bin/$1"; else echo "bunx $2"; fi; }
           case "$STACK" in
