@@ -36,6 +36,24 @@ inputs:
     description: Push the image to ghcr.io.
     required: false
     default: 'false'
+  build-args:
+    description: >-
+      Extra Docker build args, one KEY=value per line. COMMIT=<github.sha> is always passed first; a
+      line here overrides it. Never a secret: build args land in the image history and the provenance.
+    required: false
+    default: ''
+  attest:
+    description: Attach an SBOM and a max-mode provenance attestation to the pushed image (BuildKit).
+    required: false
+    default: 'false'
+  scan:
+    description: Build the image locally first and scan it with Trivy; a finding at scan-severity fails before any push.
+    required: false
+    default: 'false'
+  scan-severity:
+    description: Comma-separated Trivy severities that fail the scan.
+    required: false
+    default: CRITICAL
 
 outputs:
   image:
@@ -98,7 +116,9 @@ runs:
         REPOSITORY: ${{ github.repository }}
         SHA: ${{ github.sha }}
       shell: bash
-      run: echo "image=ghcr.io/${REPOSITORY,,}:$SHA" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "image=ghcr.io/${REPOSITORY,,}:$SHA" >> "$GITHUB_OUTPUT"
+        echo "scan=fleet-local/scan:$SHA" >> "$GITHUB_OUTPUT"
 
     - name: Set up Docker Buildx
       if: inputs.image == 'true'
@@ -112,6 +132,34 @@ runs:
         username: ${{ github.actor }}
         password: ${{ github.token }}
 
+    # The scan build loads into the local Docker daemon (no attestations there); the push build
+    # below reuses its layers from the builder cache, so the pushed image has the scanned content.
+    - name: Build the image for the scan
+      if: inputs.image == 'true' && inputs.scan == 'true'
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        tags: ${{ steps.name.outputs.scan }}
+        load: true
+        push: false
+        provenance: false
+        build-args: |
+          COMMIT=${{ github.sha }}
+          ${{ inputs.build-args }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=min
+
+    - name: Scan the image with Trivy
+      if: inputs.image == 'true' && inputs.scan == 'true'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      with:
+        scan-type: image
+        image-ref: ${{ steps.name.outputs.scan }}
+        severity: ${{ inputs.scan-severity }}
+        exit-code: '1'
+        cache: 'false'
+
     - name: Build the image
       id: docker
       if: inputs.image == 'true'
@@ -121,5 +169,10 @@ runs:
         file: ${{ inputs.dockerfile }}
         tags: ${{ steps.name.outputs.image }}
         push: ${{ inputs.push == 'true' }}
+        provenance: ${{ inputs.attest == 'true' && 'mode=max' || 'false' }}
+        sbom: ${{ inputs.attest == 'true' }}
+        build-args: |
+          COMMIT=${{ github.sha }}
+          ${{ inputs.build-args }}
         cache-from: type=gha
         cache-to: type=gha,mode=min
